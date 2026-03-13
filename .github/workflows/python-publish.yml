@@ -284,8 +284,7 @@ jobs:
           echo "🏷️  Version in built wheel: $BUILT_VERSION"
 
       - name: 🧪 Validate package metadata
-        run: twine check dist/* --verbose
-
+        run: twine check dist/*
       - name: 🗃️ Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
