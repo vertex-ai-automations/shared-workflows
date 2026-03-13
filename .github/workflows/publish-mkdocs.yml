@@ -66,6 +66,7 @@ concurrency:
 jobs:
   build-docs:
     name: 🔨 Build Docs
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults:
       run:
