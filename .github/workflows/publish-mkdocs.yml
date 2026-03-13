@@ -106,6 +106,7 @@ jobs:
             mkdocs build --strict
           else
             mkdocs build
+            ls -la
           fi
 
       # Upload using the official GitHub Pages artifact action
