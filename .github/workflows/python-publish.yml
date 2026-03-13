@@ -42,6 +42,10 @@
 # NOTE: The build artifact name is automatically derived from the calling
 #       repository name (e.g. "custom-logger-dist"). No manual configuration needed.
 #
+# NOTE: This workflow supports setuptools_scm versioning. The version is
+#       derived from the git tag at build time — no static version field
+#       in pyproject.toml is required.
+#
 # SECRETS:
 #   PYPI_API_TOKEN      — real PyPI token (pypi.org)
 #   TEST_PYPI_API_TOKEN — TestPyPI token (test.pypi.org)
@@ -130,49 +134,88 @@ permissions:
 
 jobs:
   # ============================================================
-  # JOB 1: Validate tag matches package version
+  # JOB 1: Validate the release tag (setuptools_scm aware)
+  # ============================================================
+  # This project uses setuptools_scm — the package version is derived
+  # dynamically from the git tag at build time and written to:
+  #   src/custom_logger/_version.py
+  #
+  # There is no static version = "x.x.x" in pyproject.toml to compare
+  # against. Instead this job:
+  #   1. Validates the tag is clean SemVer X.Y.Z (no dev/dirty suffixes)
+  #   2. Installs setuptools_scm and resolves the version from the tag
+  #   3. Asserts the resolved version matches the tag exactly
+  #      (a mismatch means the tag landed on a non-HEAD commit)
   # ============================================================
   validate-version:
-    name: ✅ Validate Tag vs Package Version
+    name: ✅ Validate Release Tag (setuptools_scm)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ${{ inputs.working-directory || '.' }}
 
     steps:
-      - name: 🔄 Checkout
+      - name: 🔄 Checkout with full history
         uses: actions/checkout@v4
+        with:
+          # setuptools_scm needs the full git history and all tags to
+          # resolve the version correctly — shallow clones return "0.1.dev0"
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version || '3.11' }}
 
-      - name: 🏷️ Check tag matches package version
-        run: |
-          # Extract version from pyproject.toml or setup.cfg
-          if [ -f "pyproject.toml" ]; then
-            PKG_VERSION=$(python -c "import tomllib; f=open('pyproject.toml','rb'); d=tomllib.load(f); print(d['project']['version'])" 2>/dev/null || \
-                          grep -Po '(?<=^version = ")[^"]+' pyproject.toml | head -1)
-          elif [ -f "setup.cfg" ]; then
-            PKG_VERSION=$(grep -Po '(?<=^version = ).*' setup.cfg | head -1)
-          else
-            echo "⚠️  No pyproject.toml or setup.cfg found — skipping version check"
-            exit 0
-          fi
+      - name: 📦 Install setuptools_scm
+        run: pip install setuptools_scm --quiet
 
-          # Strip leading 'v' if present — supports both 1.2.1 and v1.2.1 tag formats
+      - name: 🏷️ Validate tag and resolved version
+        run: |
+          # Strip leading 'v' if present — supports both 1.2.1 and v1.2.1
           TAG_VERSION="${GITHUB_REF_NAME#v}"
 
-          echo "📦 Package version : $PKG_VERSION"
-          echo "🏷️  Git tag version  : $TAG_VERSION"
+          echo "🏷️  Git tag         : $GITHUB_REF_NAME"
+          echo "🏷️  Tag version     : $TAG_VERSION"
 
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "❌ Version mismatch! Tag '$TAG_VERSION' does not match package version '$PKG_VERSION'"
-            echo "   Update the version in pyproject.toml before releasing."
+          # --- 1. Assert tag is clean SemVer X.Y.Z ---
+          # PyPI rejects versions with .devN, +local, or dirty suffixes.
+          # setuptools_scm appends these automatically when the tag does
+          # not point to an exact commit.
+          if ! echo "$TAG_VERSION" | grep -Pq '^\d+\.\d+\.\d+$'; then
+            echo "❌ Tag '$TAG_VERSION' is not valid SemVer (expected X.Y.Z)"
+            echo "   Ensure the tag contains no pre-release or build suffixes."
             exit 1
           fi
-          echo "✅ Versions match — proceeding with publish"
+
+          # --- 2. Resolve version via setuptools_scm ---
+          SCM_VERSION=$(python -c "from setuptools_scm import get_version; print(get_version())" 2>/dev/null || echo "")
+
+          if [ -z "$SCM_VERSION" ]; then
+            echo "❌ setuptools_scm could not resolve a version."
+            echo "   Ensure the tag '$GITHUB_REF_NAME' is pushed before the workflow runs."
+            exit 1
+          fi
+
+          echo "📦 setuptools_scm  : $SCM_VERSION"
+
+          # --- 3. Assert resolved version matches the tag exactly ---
+          # If the tag is not on HEAD, setuptools_scm appends a .devN+gABCDEF
+          # suffix which PyPI will reject as a non-canonical version.
+          if [ "$SCM_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ Version mismatch!"
+            echo "   Tag version      : $TAG_VERSION"
+            echo "   Resolved version : $SCM_VERSION"
+            echo ""
+            echo "   setuptools_scm appended a dev suffix — this usually means"
+            echo "   the tag was not placed on the HEAD commit."
+            echo "   Delete the tag, ensure HEAD is the intended release commit,"
+            echo "   then re-tag: git tag $TAG_VERSION && git push origin $TAG_VERSION"
+            exit 1
+          fi
+
+          echo "✅ Tag '$TAG_VERSION' is clean SemVer and resolves correctly — proceeding"
 
   # ============================================================
   # JOB 2: Run tests
@@ -186,8 +229,13 @@ jobs:
         working-directory: ${{ inputs.working-directory || '.' }}
 
     steps:
-      - name: 🔄 Checkout
+      - name: 🔄 Checkout with full history
         uses: actions/checkout@v4
+        with:
+          # Full history required so setuptools_scm can resolve the version
+          # during package install (pip install -e .)
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
         uses: actions/setup-python@v5
@@ -226,15 +274,17 @@ jobs:
     defaults:
       run:
         working-directory: ${{ inputs.working-directory || '.' }}
-    # Expose artifact name as a job output — downstream jobs reference this
-    # instead of the workflow-level env var to avoid resolution issues on
-    # workflow_dispatch where github.event.repository may differ
     outputs:
       artifact-name: ${{ steps.set-artifact-name.outputs.name }}
 
     steps:
-      - name: 🔄 Checkout
+      - name: 🔄 Checkout with full history
         uses: actions/checkout@v4
+        with:
+          # Full history + tags required for setuptools_scm to stamp the
+          # correct version into the built wheel and sdist
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
         uses: actions/setup-python@v5
@@ -252,6 +302,18 @@ jobs:
 
       - name: 🧱 Build sdist and wheel
         run: python -m build
+
+      - name: 🔍 Confirm built version
+        # Sanity check — print the version baked into the wheel by setuptools_scm
+        run: |
+          BUILT_VERSION=$(python -c "
+          import glob, re
+          wheels = glob.glob('dist/*.whl')
+          if wheels:
+              match = re.search(r'-(\d+\.\d+\.\d+)-', wheels[0])
+              print(match.group(1) if match else 'unknown')
+          ")
+          echo "🏷️  Version in built wheel: $BUILT_VERSION"
 
       - name: 🧪 Validate package metadata
         run: twine check dist/*
