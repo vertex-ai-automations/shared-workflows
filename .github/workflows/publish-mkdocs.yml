@@ -67,10 +67,6 @@ jobs:
   build-docs:
     name: 🔨 Build Docs
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
     runs-on: ubuntu-latest
     defaults:
       run:
