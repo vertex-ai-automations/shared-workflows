@@ -1,0 +1,136 @@
+# ==============================================================================
+# 📚 Reusable Workflow: Deploy MkDocs to GitHub Pages
+# ==============================================================================
+# USAGE — call this from your project repo:
+#
+#   jobs:
+#     docs:
+#       uses: your-org/.github/.github/workflows/publish-mkdocs.yml@main
+#       with:
+#         python-version: '3.11'
+#         docs-requirements: 'docs/requirements.txt'
+#         src-layout: true
+#       secrets: inherit
+#
+# SETUP:
+#   1. Store this file in your shared `.github` repo under .github/workflows/
+#   2. Create a docs/requirements.txt with pinned dependencies (see below)
+#   3. Enable GitHub Pages in repo Settings → Pages → Source: GitHub Actions
+# ==============================================================================
+
+name: 📚 Deploy MkDocs Docs to GitHub Pages
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version to use for building docs"
+        type: string
+        default: "3.11"
+      docs-requirements:
+        description: "Path to pip requirements file for docs dependencies"
+        type: string
+        default: "docs/requirements.txt"
+      src-layout:
+        description: "Set true if project uses src/ layout (adds src/ to PYTHONPATH)"
+        type: boolean
+        default: false
+      mkdocs-strict:
+        description: "Fail on warnings during mkdocs build"
+        type: boolean
+        default: true
+      working-directory:
+        description: "Working directory (monorepo support)"
+        type: string
+        default: "."
+
+  # Allow direct triggering for testing
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: "Python version"
+        type: string
+        default: "3.11"
+
+# Minimal, scoped permissions (principle of least privilege)
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Prevent concurrent deployments — queue them instead of cancelling
+concurrency:
+  group: "pages-deploy"
+  cancel-in-progress: false
+
+jobs:
+  build-docs:
+    name: 🔨 Build Docs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+
+    steps:
+      - name: 🔄 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for git-revision-date plugins
+
+      - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.11' }}
+
+      # Cache pip downloads to speed up repeat builds
+      - name: 💾 Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: docs-pip-${{ runner.os }}-${{ inputs.python-version || '3.11' }}-${{ hashFiles(inputs.docs-requirements || 'docs/requirements.txt') }}
+          restore-keys: |
+            docs-pip-${{ runner.os }}-${{ inputs.python-version || '3.11' }}-
+
+      - name: 📦 Install doc dependencies
+        run: |
+          pip install --upgrade pip
+          # Prefer pinned requirements file for reproducible builds.
+          # Create docs/requirements.txt with: mkdocs-material==9.x.x mkdocstrings[python]==0.x.x
+          if [ -f "${{ inputs.docs-requirements || 'docs/requirements.txt' }}" ]; then
+            pip install -r "${{ inputs.docs-requirements || 'docs/requirements.txt' }}"
+          else
+            echo "⚠️  No requirements file found at ${{ inputs.docs-requirements || 'docs/requirements.txt' }}"
+            echo "⚠️  Falling back to unpinned install. Pin your deps for reproducible builds!"
+            pip install mkdocs-material mkdocstrings[python]
+          fi
+
+      - name: 🔧 Configure PYTHONPATH for src layout
+        if: ${{ inputs.src-layout == true }}
+        run: echo "PYTHONPATH=$PYTHONPATH:$(pwd)/src" >> $GITHUB_ENV
+
+      - name: 🔨 Build MkDocs site
+        run: |
+          if [ "${{ inputs.mkdocs-strict || 'true' }}" = "true" ]; then
+            mkdocs build --strict
+          else
+            mkdocs build
+          fi
+
+      # Upload using the official GitHub Pages artifact action
+      - name: 📤 Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ inputs.working-directory || '.' }}/site
+
+  deploy-docs:
+    name: 🚀 Deploy to GitHub Pages
+    needs: build-docs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: 🚀 Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
