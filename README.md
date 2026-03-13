@@ -16,11 +16,17 @@
   - [Deploy MkDocs to GitHub Pages](#-deploy-mkdocs-to-github-pages)
   - [Build and Publish Python Package to PyPI](#-build-and-publish-python-package-to-pypi)
 - [Quick Start](#-quick-start)
+- [Publishing to TestPyPI](#-publishing-to-testpypi)
+  - [How It Works](#how-it-works)
+  - [TestPyPI Setup](#testpypi-setup)
+  - [Recommended Pattern: Test Then Release](#recommended-pattern-test-then-release)
+  - [TestPyPI Gotchas](#testpypi-gotchas)
 - [Setup Guide](#-setup-guide)
   - [Organization Settings](#1-organization-settings)
   - [PyPI Trusted Publishing](#2-pypi-trusted-publishing-recommended)
   - [GitHub Pages](#3-github-pages)
   - [Secrets & Environments](#4-secrets--environments)
+  - [Docs Requirements File](#5-docs-requirements-file)
 - [Input Reference](#-input-reference)
 - [Migration Guide](#-migration-guide)
 - [Troubleshooting](#-troubleshooting)
@@ -129,7 +135,9 @@ test ──────────────┘         └──▶ publish-
 
 ## 🚀 Quick Start
 
-Add this file to your project repo at `.github/workflows/release.yml`:
+Add this file to your project repo at `.github/workflows/release.yml`.
+
+**Minimal setup** (docs + PyPI publish on tag only):
 
 ```yaml
 name: 🚢 Release
@@ -160,6 +168,139 @@ jobs:
       use-trusted-publishing: true
     secrets: inherit
 ```
+
+> Want to also validate against **TestPyPI** on every merge? See [Publishing to TestPyPI → Recommended Pattern](#recommended-pattern-test-then-release) for a complete example with both jobs.
+
+---
+
+## 🧪 Publishing to TestPyPI
+
+The `python-publish.yml` workflow supports publishing to [TestPyPI](https://test.pypi.org) — a fully separate sandbox registry — via the `repository-url` input. This lets you validate your packaging pipeline and package metadata before committing to a real PyPI release.
+
+### How It Works
+
+The `repository-url` input controls which registry receives the upload:
+
+```yaml
+# Default — publishes to the real PyPI
+repository-url: "https://upload.pypi.org/legacy/"
+
+# Override — publishes to TestPyPI sandbox instead
+repository-url: "https://test.pypi.org/legacy/"
+```
+
+Everything else in the pipeline (version validation, tests, build, metadata check) runs identically regardless of target registry.
+
+---
+
+### TestPyPI Setup
+
+TestPyPI and PyPI are **completely independent systems**. Accounts, packages, and Trusted Publishers are not shared between them. You must set each up separately.
+
+#### Option A — Trusted Publishing on TestPyPI (recommended)
+
+1. Register or log in at [test.pypi.org](https://test.pypi.org)
+2. Navigate to your project → **Managing** → **Publishing** → **Add a new publisher**
+3. Fill in the same fields as your PyPI publisher, but point to the `test-publish` environment:
+
+| Field | Value |
+|---|---|
+| Owner | `your-org` |
+| Repository name | `your-project-repo` |
+| Workflow name | `release.yml` *(your caller workflow)* |
+| Environment name | `test-pypi` |
+
+4. Create a matching GitHub Environment named `test-pypi` in your project repo:
+   - **Settings** → **Environments** → **New environment** → name it `test-pypi`
+   - No required reviewers needed (it's just a sandbox)
+
+#### Option B — API Token Fallback
+
+1. Generate a token at [test.pypi.org/manage/account/token](https://test.pypi.org/manage/account/token/)
+2. Add it as a repo secret named `TEST_PYPI_API_TOKEN` in your project repo
+3. Use it in your caller workflow:
+
+```yaml
+with:
+  use-trusted-publishing: false
+  repository-url: "https://test.pypi.org/legacy/"
+secrets:
+  PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+```
+
+> Keep `TEST_PYPI_API_TOKEN` and `PYPI_API_TOKEN` as separate secrets — they are issued by different systems and should never be mixed up.
+
+---
+
+### Recommended Pattern: Test Then Release
+
+The cleanest approach is two jobs in your caller workflow — one that fires on every merge to `main` (TestPyPI) and one that fires only on version tags (real PyPI). This ensures every merge proves the package is publishable before you ever cut a release.
+
+```yaml
+name: 🚢 Release
+
+on:
+  push:
+    branches: [main]      # test publish on every merge
+    tags: ["v*.*.*"]      # real publish only on version tags
+
+jobs:
+
+  docs:
+    uses: your-org/.github/.github/workflows/publish-mkdocs.yml@main
+    with:
+      python-version: "3.11"
+      docs-requirements: "docs/requirements.txt"
+      src-layout: true
+    secrets: inherit
+
+  # ✅ Runs on every push to main — validates the full pipeline against TestPyPI
+  test-publish:
+    if: github.ref == 'refs/heads/main'
+    uses: your-org/.github/.github/workflows/python-publish.yml@main
+    with:
+      artifact-name: "my-package-dist-test"       # must differ from prod artifact name
+      run-tests: true
+      test-command: "pytest tests/ -v --tb=short"
+      use-trusted-publishing: true                 # or false + TEST_PYPI_API_TOKEN
+      repository-url: "https://test.pypi.org/legacy/"
+    secrets: inherit
+
+  # 🚀 Runs only on version tags — publishes to real PyPI
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: your-org/.github/.github/workflows/python-publish.yml@main
+    with:
+      artifact-name: "my-package-dist"
+      run-tests: true
+      test-command: "pytest tests/ -v --tb=short"
+      use-trusted-publishing: true
+      repository-url: "https://upload.pypi.org/legacy/"
+    secrets: inherit
+```
+
+**What this gives you:**
+
+| Event | Docs | TestPyPI | PyPI |
+|---|---|---|---|
+| Push to `main` | ✅ deployed | ✅ published | ⛔ skipped |
+| Push `v1.2.3` tag | ⛔ skipped | ⛔ skipped | ✅ published |
+
+---
+
+### TestPyPI Gotchas
+
+> **Version uniqueness** — TestPyPI rejects duplicate versions just like PyPI. Each upload must have a unique version number. Use a `.devN` suffix (e.g., `1.2.3.dev1`) for test builds, or automate it with the build number:
+> ```toml
+> # pyproject.toml — bump this before each test upload
+> version = "1.2.3.dev1"
+> ```
+
+> **Package not installable** — TestPyPI doesn't mirror all of PyPI's dependencies. `pip install --index-url https://test.pypi.org/simple/ my-package` may fail if your dependencies aren't also on TestPyPI. Use `--extra-index-url https://pypi.org/simple/` to fall back to real PyPI for dependencies.
+
+> **Trusted Publisher must be registered on TestPyPI separately** — even if your PyPI Trusted Publisher is set up correctly, TestPyPI will reject OIDC tokens unless you've added a publisher there too.
+
+> **`artifact-name` must differ** — if your `test-publish` and `publish` jobs run in the same workflow, they must use different `artifact-name` values to avoid upload collisions.
 
 ---
 
@@ -275,12 +416,12 @@ black==24.4.0
 | `run-tests` | `boolean` | `true` | Run tests before publishing |
 | `test-command` | `string` | `"pytest"` | Test command to execute |
 | `use-trusted-publishing` | `boolean` | `true` | Use OIDC Trusted Publishing; set `false` to use token |
-| `repository-url` | `string` | `https://upload.pypi.org/legacy/` | Override to use TestPyPI |
+| `repository-url` | `string` | `https://upload.pypi.org/legacy/` | Override to `https://test.pypi.org/legacy/` to publish to TestPyPI |
 | `working-directory` | `string` | `"."` | Root directory (for monorepos) |
 
 | Secret | Required | Description |
 |---|---|---|
-| `PYPI_API_TOKEN` | Only if `use-trusted-publishing: false` | PyPI API token |
+| `PYPI_API_TOKEN` | Only if `use-trusted-publishing: false` | PyPI **or** TestPyPI API token — keep these as separate secrets (`PYPI_API_TOKEN` vs `TEST_PYPI_API_TOKEN`) |
 
 ---
 
@@ -302,7 +443,7 @@ git rm .github/workflows/python-publish.yml
 
 **Step 5:** If migrating the MkDocs workflow, verify your GitHub Pages source is set to **GitHub Actions** (not a branch).
 
-> **Tip:** Run against TestPyPI first by setting `repository-url: "https://test.pypi.org/legacy/"` and `use-trusted-publishing: false` until you're confident the pipeline works end to end.
+> **Tip:** Validate against TestPyPI before your first real release. See [Publishing to TestPyPI](#-publishing-to-testpypi) for the full recommended pattern.
 
 ---
 
@@ -367,8 +508,12 @@ with:
 
 ### ❌ TestPyPI publish fails with 400 error
 
-TestPyPI and PyPI are separate — your account and packages are not shared.
-→ Register the package on TestPyPI first at [test.pypi.org](https://test.pypi.org), then set up a separate Trusted Publisher there.
+The most common causes:
+
+- **Duplicate version** — TestPyPI rejects re-uploads of the same version. Bump to a `.devN` suffix (e.g., `1.2.3.dev2`) and try again.
+- **Package not registered on TestPyPI** — unlike PyPI, TestPyPI sometimes requires the project to exist before the first upload. Upload manually once via `twine upload --repository testpypi dist/*`.
+- **Trusted Publisher not set up on TestPyPI** — even if PyPI Trusted Publishing works, TestPyPI requires its own separate publisher entry. See [TestPyPI Setup](#testpypi-setup).
+- **Wrong secret used** — confirm `TEST_PYPI_API_TOKEN` was generated from [test.pypi.org](https://test.pypi.org), not pypi.org.
 
 ---
 
