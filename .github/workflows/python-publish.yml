@@ -100,9 +100,8 @@ on:
       PYPI_API_TOKEN:
         description: >
           API token for the target registry.
-          For PyPI:     pass ${{ secrets.PYPI_API_TOKEN }}
-          For TestPyPI: pass ${{ secrets.TEST_PYPI_API_TOKEN }}
-          Map the correct secret in your caller workflow.
+          For PyPI:     pass secrets.PYPI_API_TOKEN in your caller workflow.
+          For TestPyPI: pass secrets.TEST_PYPI_API_TOKEN mapped to PYPI_API_TOKEN.
           Only required when use-trusted-publishing is false.
         required: false
 
