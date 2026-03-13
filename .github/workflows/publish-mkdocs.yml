@@ -94,15 +94,7 @@ jobs:
       - name: 📦 Install doc dependencies
         run: |
           pip install --upgrade pip
-          # Prefer pinned requirements file for reproducible builds.
-          # Create docs/requirements.txt with: mkdocs-material==9.x.x mkdocstrings[python]==0.x.x
-          if [ -f "${{ inputs.docs-requirements || 'docs/requirements.txt' }}" ]; then
-            pip install -r "${{ inputs.docs-requirements || 'docs/requirements.txt' }}"
-          else
-            echo "⚠️  No requirements file found at ${{ inputs.docs-requirements || 'docs/requirements.txt' }}"
-            echo "⚠️  Falling back to unpinned install. Pin your deps for reproducible builds!"
-            pip install mkdocs-material mkdocstrings-python mkdocs-git-revision-date-localized-plugin mkdocs-git-authors-plugin
-          fi
+          pip install mkdocs-material mkdocstrings-python mkdocs-git-revision-date-localized-plugin mkdocs-git-authors-plugin
 
       - name: 🔧 Configure PYTHONPATH for src layout
         if: ${{ inputs.src-layout == true }}
