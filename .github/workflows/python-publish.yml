@@ -5,63 +5,45 @@
 #
 #   on:
 #     push:
-#       tags: ["*.*.*"]       # bare SemVer e.g. 1.2.1
+#       tags: ["*.*.*"]     # bare SemVer e.g. 1.2.1
 #
 #   jobs:
-#
-#     # 🧪 Publish to TestPyPI on every merge to main
-#     test-publish:
-#       if: github.ref == 'refs/heads/main'
-#       uses: vertex-ai-automations/shared-workflows/.github/workflows/python-publish.yml@main
-#       permissions:
-#         contents: read
-#         id-token: write
-#       with:
-#         python-version: '3.11'
-#         run-tests: true
-#         test-command: 'pytest tests/ -v'
-#         use-trusted-publishing: false
-#         repository-url: 'https://test.pypi.org/legacy/'
-#       secrets:
-#         PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
-#
-#     # 🚀 Publish to PyPI on SemVer tag e.g. 1.2.1
 #     publish:
-#       if: startsWith(github.ref, 'refs/tags/') && !startsWith(github.ref, 'refs/tags/v')
 #       uses: vertex-ai-automations/shared-workflows/.github/workflows/python-publish.yml@main
-#       permissions:
-#         contents: read
-#         id-token: write
 #       with:
 #         python-version: '3.11'
 #         run-tests: true
 #         test-command: 'pytest tests/ -v'
-#         use-trusted-publishing: true
+#         publish-target: 'both'     # 'pypi' | 'testpypi' | 'both'
 #       secrets: inherit
 #
-# NOTE: The build artifact name is automatically derived from the calling
-#       repository name (e.g. "custom-logger-dist"). No manual configuration needed.
+# PUBLISH TARGET FLAG:
+#   publish-target controls which registries receive the built package:
 #
-# NOTE: This workflow supports setuptools_scm versioning. The version is
-#       derived from the git tag at build time — no static version field
-#       in pyproject.toml is required.
+#   'pypi'     → publishes to pypi.org only        (uses Trusted Publishing)
+#   'testpypi' → publishes to test.pypi.org only   (uses TEST_PYPI_API_TOKEN)
+#   'both'     → publishes to testpypi first, then pypi (default)
+#
+# PERMISSIONS:
+#   Declared inside this workflow — callers do NOT need permissions blocks.
 #
 # SECRETS:
-#   PYPI_API_TOKEN      — real PyPI token (pypi.org)
-#   TEST_PYPI_API_TOKEN — TestPyPI token (test.pypi.org)
+#   PYPI_API_TOKEN      — pypi.org token        (required if Trusted Publishing not set up)
+#   TEST_PYPI_API_TOKEN — test.pypi.org token   (required when target is 'testpypi' or 'both')
+#   Pass via: secrets: inherit  (recommended — shares all project repo secrets)
 #
-#   Both secrets live in your PROJECT repo, not here.
-#   In your caller workflow, map the right secret:
-#     For TestPyPI: secrets: { PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }} }
-#     For PyPI:     secrets: inherit  (uses PYPI_API_TOKEN directly)
+# NOTES:
+#   - Version is derived from the git tag via setuptools_scm (no static version in pyproject.toml)
+#   - All jobs are tag-gated — this workflow skips cleanly on non-tag pushes
+#   - Artifact name is auto-derived from the repo name e.g. "custom-logger-dist"
 #
-# SETUP (Trusted Publishing — recommended for PyPI):
-#   1. Go to pypi.org → your project → Publishing → Add a publisher
-#   2. Set: owner=vertex-ai-automations, repo=your-repo, workflow=release.yml, env=pypi
+# SETUP (Trusted Publishing on pypi.org):
+#   pypi.org → your project → Publishing → Add publisher
+#     owner=vertex-ai-automations, repo=your-repo, workflow=release.yml, env=pypi
 #
-# SETUP (Token fallback — required for TestPyPI unless separately configured):
-#   1. Generate tokens at pypi.org and test.pypi.org independently
-#   2. Store in project repo secrets as PYPI_API_TOKEN and TEST_PYPI_API_TOKEN
+# SETUP (TestPyPI token):
+#   Generate at test.pypi.org/manage/account/token/
+#   Add to project repo as secret: TEST_PYPI_API_TOKEN
 # ==============================================================================
 
 name: 📦 Build and Publish Python Package to PyPI
@@ -81,82 +63,69 @@ on:
         description: "Command to run tests (if run-tests is true)"
         type: string
         default: "pytest"
+      publish-target:
+        description: >
+          Controls which registry the package is published to.
+          'pypi'     — publish to pypi.org only (uses Trusted Publishing by default)
+          'testpypi' — publish to test.pypi.org only (uses TEST_PYPI_API_TOKEN)
+          'both'     — publish to testpypi first, then pypi (default)
+        type: string
+        default: "both"
       use-trusted-publishing:
         description: >
-          Use OIDC Trusted Publishing (recommended for PyPI).
-          Set false to use the PYPI_API_TOKEN secret instead.
-          Always set false when targeting TestPyPI unless you have a
-          separate Trusted Publisher registered there.
+          Use OIDC Trusted Publishing for the pypi.org target.
+          Set false to use PYPI_API_TOKEN instead.
+          TestPyPI always uses TEST_PYPI_API_TOKEN regardless of this flag.
         type: boolean
         default: true
-      repository-url:
-        description: >
-          Target registry URL.
-          PyPI (default): https://upload.pypi.org/legacy/
-          TestPyPI:       https://test.pypi.org/legacy/
-        type: string
-        default: "https://upload.pypi.org/legacy/"
       working-directory:
         description: "Working directory (monorepo support)"
         type: string
         default: "."
     secrets:
       PYPI_API_TOKEN:
-        description: >
-          API token for the target registry.
-          For PyPI:     pass secrets.PYPI_API_TOKEN in your caller workflow.
-          For TestPyPI: pass secrets.TEST_PYPI_API_TOKEN mapped to PYPI_API_TOKEN.
-          Only required when use-trusted-publishing is false.
+        description: "pypi.org API token — only required if use-trusted-publishing is false"
+        required: false
+      TEST_PYPI_API_TOKEN:
+        description: "test.pypi.org API token — required when publish-target is 'testpypi' or 'both'"
         required: false
 
-  # Allow manual triggering — useful for ad-hoc TestPyPI releases
+  # Allow manual triggering from the Actions tab
   workflow_dispatch:
     inputs:
       python-version:
         description: "Python version"
         type: string
         default: "3.11"
-      use-trusted-publishing:
-        description: "Use OIDC Trusted Publishing (false = use token)"
-        type: boolean
-        default: true
-      repository-url:
-        description: "Target registry URL"
+      publish-target:
+        description: "Target registry"
         type: choice
         options:
-          - "https://upload.pypi.org/legacy/"
-          - "https://test.pypi.org/legacy/"
-        default: "https://upload.pypi.org/legacy/"
+          - "both"
+          - "pypi"
+          - "testpypi"
+        default: "both"
+      use-trusted-publishing:
+        description: "Use OIDC Trusted Publishing for PyPI (false = use token)"
+        type: boolean
+        default: true
 
-# Minimal permissions — publish jobs declare id-token conditionally
+# Permissions declared here — callers do NOT need permissions blocks.
+# contents: read  — checkout
+# id-token: write — OIDC Trusted Publishing (scoped to publish-pypi job only)
 permissions:
   contents: read
+  id-token: write
 
-# TAG GUARD — enforced at every job level below.
-# This workflow uses setuptools_scm which derives the package version
-# from the git tag at build time. Running on a non-tag commit produces
-# a ".devN+gABCDEF" dirty version that PyPI and TestPyPI will reject.
-#
-# Every job carries:
-#   if: startsWith(github.ref, 'refs/tags/') && !startsWith(github.ref, 'refs/tags/v')
-#
-# This means callers never need to add tag conditions themselves —
-# calling this workflow on a branch push skips all jobs cleanly.
+# TAG GUARD — enforced on every job below.
+# setuptools_scm derives the version from the git tag. A non-tag commit
+# produces ".devN+gABCDEF" which PyPI and TestPyPI both reject.
+# Callers never need to add tag conditions — non-tag pushes skip cleanly.
 
 jobs:
+
   # ============================================================
   # JOB 1: Validate the release tag (setuptools_scm aware)
-  # ============================================================
-  # This project uses setuptools_scm — the package version is derived
-  # dynamically from the git tag at build time and written to:
-  #   src/custom_logger/_version.py
-  #
-  # There is no static version = "x.x.x" in pyproject.toml to compare
-  # against. Instead this job:
-  #   1. Validates the tag is clean SemVer X.Y.Z (no dev/dirty suffixes)
-  #   2. Installs setuptools_scm and resolves the version from the tag
-  #   3. Asserts the resolved version matches the tag exactly
-  #      (a mismatch means the tag landed on a non-HEAD commit)
   # ============================================================
   validate-version:
     name: ✅ Validate Release Tag (setuptools_scm)
@@ -170,8 +139,6 @@ jobs:
       - name: 🔄 Checkout with full history
         uses: actions/checkout@v4
         with:
-          # setuptools_scm needs the full git history and all tags to
-          # resolve the version correctly — shallow clones return "0.1.dev0"
           fetch-depth: 0
           fetch-tags: true
 
@@ -185,23 +152,20 @@ jobs:
 
       - name: 🏷️ Validate tag and resolved version
         run: |
-          # Strip leading 'v' if present — supports both 1.2.1 and v1.2.1
           TAG_VERSION="${GITHUB_REF_NAME#v}"
 
           echo "🏷️  Git tag         : $GITHUB_REF_NAME"
           echo "🏷️  Tag version     : $TAG_VERSION"
+          echo "🎯  Publish target  : ${{ inputs.publish-target || 'both' }}"
 
-          # --- 1. Assert tag is clean SemVer X.Y.Z ---
-          # PyPI rejects versions with .devN, +local, or dirty suffixes.
-          # setuptools_scm appends these automatically when the tag does
-          # not point to an exact commit.
+          # 1. Assert tag is clean SemVer X.Y.Z
           if ! echo "$TAG_VERSION" | grep -Pq '^\d+\.\d+\.\d+$'; then
             echo "❌ Tag '$TAG_VERSION' is not valid SemVer (expected X.Y.Z)"
-            echo "   Ensure the tag contains no pre-release or build suffixes."
+            echo "   Ensure the tag has no pre-release or build suffixes."
             exit 1
           fi
 
-          # --- 2. Resolve version via setuptools_scm ---
+          # 2. Resolve version via setuptools_scm
           SCM_VERSION=$(python -c "from setuptools_scm import get_version; print(get_version())" 2>/dev/null || echo "")
 
           if [ -z "$SCM_VERSION" ]; then
@@ -212,22 +176,19 @@ jobs:
 
           echo "📦 setuptools_scm  : $SCM_VERSION"
 
-          # --- 3. Assert resolved version matches the tag exactly ---
-          # If the tag is not on HEAD, setuptools_scm appends a .devN+gABCDEF
-          # suffix which PyPI will reject as a non-canonical version.
+          # 3. Assert resolved version matches the tag exactly
           if [ "$SCM_VERSION" != "$TAG_VERSION" ]; then
             echo "❌ Version mismatch!"
             echo "   Tag version      : $TAG_VERSION"
             echo "   Resolved version : $SCM_VERSION"
             echo ""
-            echo "   setuptools_scm appended a dev suffix — this usually means"
-            echo "   the tag was not placed on the HEAD commit."
-            echo "   Delete the tag, ensure HEAD is the intended release commit,"
-            echo "   then re-tag: git tag $TAG_VERSION && git push origin $TAG_VERSION"
+            echo "   setuptools_scm appended a dev suffix — the tag is likely not on HEAD."
+            echo "   Delete the tag, ensure HEAD is the release commit, then re-tag:"
+            echo "   git tag $TAG_VERSION && git push origin $TAG_VERSION"
             exit 1
           fi
 
-          echo "✅ Tag '$TAG_VERSION' is clean SemVer and resolves correctly — proceeding"
+          echo "✅ Tag '$TAG_VERSION' is clean SemVer and resolves correctly"
 
   # ============================================================
   # JOB 2: Run tests
@@ -247,8 +208,6 @@ jobs:
       - name: 🔄 Checkout with full history
         uses: actions/checkout@v4
         with:
-          # Full history required so setuptools_scm can resolve the version
-          # during package install (pip install -e .)
           fetch-depth: 0
           fetch-tags: true
 
@@ -280,7 +239,6 @@ jobs:
   build:
     name: 🏗️ Build Package
     needs: [validate-version, test]
-    # Run even if test was skipped (run-tests: false), but not if it failed
     if: |
       always() &&
       needs.validate-version.result == 'success' &&
@@ -296,8 +254,6 @@ jobs:
       - name: 🔄 Checkout with full history
         uses: actions/checkout@v4
         with:
-          # Full history + tags required for setuptools_scm to stamp the
-          # correct version into the built wheel and sdist
           fetch-depth: 0
           fetch-tags: true
 
@@ -308,8 +264,6 @@ jobs:
 
       - name: 🏷️ Set artifact name
         id: set-artifact-name
-        # Derives from repo name — guarantees uniqueness across all projects
-        # e.g. repo "custom-logger" → artifact "custom-logger-dist"
         run: echo "name=${{ github.event.repository.name }}-dist" >> $GITHUB_OUTPUT
 
       - name: 📦 Install build tools
@@ -319,7 +273,6 @@ jobs:
         run: python -m build
 
       - name: 🔍 Confirm built version
-        # Sanity check — print the version baked into the wheel by setuptools_scm
         run: |
           BUILT_VERSION=$(python -c "
           import glob, re
@@ -342,64 +295,21 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  # JOB 4A: Publish via OIDC Trusted Publishing (recommended)
-  # Use for: PyPI production releases
+  # JOB 4: Publish to TestPyPI
+  # Runs when publish-target is 'testpypi' or 'both'
+  # Always uses TEST_PYPI_API_TOKEN — no Trusted Publishing for TestPyPI
   # ============================================================
-  publish-trusted:
-    name: 🚀 Publish (Trusted Publishing)
+  publish-testpypi:
+    name: 🧪 Publish to TestPyPI
     needs: build
     if: |
       startsWith(github.ref, 'refs/tags/') &&
       !startsWith(github.ref, 'refs/tags/v') &&
-      inputs.use-trusted-publishing != false
+      (inputs.publish-target == 'testpypi' || inputs.publish-target == 'both')
     runs-on: ubuntu-latest
     environment:
-      name: pypi
-      url: https://pypi.org/p/${{ github.event.repository.name }}
-    permissions:
-      id-token: write  # Required for OIDC token exchange
-
-    steps:
-      - name: 🗃️ Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact-name }}
-          path: dist/
-
-      - name: 📤 Publish to PyPI (Trusted Publishing)
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: ${{ inputs.repository-url || 'https://upload.pypi.org/legacy/' }}
-
-  # ============================================================
-  # JOB 4B: Publish via API token
-  # Use for: TestPyPI (always), or PyPI if Trusted Publishing is not set up
-  #
-  # TOKEN ROUTING — handled entirely in the caller workflow:
-  #
-  #   Publishing to TestPyPI:
-  #     secrets:
-  #       PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
-  #
-  #   Publishing to PyPI with token:
-  #     secrets:
-  #       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-  #     (or use: secrets: inherit)
-  #
-  # The reusable workflow always reads secrets.PYPI_API_TOKEN — the caller
-  # is responsible for mapping the right secret to that name.
-  # ============================================================
-  publish-token:
-    name: 🚀 Publish (API Token)
-    needs: build
-    if: |
-      startsWith(github.ref, 'refs/tags/') &&
-      !startsWith(github.ref, 'refs/tags/v') &&
-      inputs.use-trusted-publishing == false
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: ${{ inputs.repository-url == 'https://test.pypi.org/legacy/' && 'https://test.pypi.org' || format('https://pypi.org/p/{0}', github.event.repository.name) }}
+      name: test-pypi
+      url: https://test.pypi.org/p/${{ github.event.repository.name }}
 
     steps:
       - name: 🗃️ Download build artifacts
@@ -416,21 +326,76 @@ jobs:
       - name: 📦 Install twine
         run: pip install --upgrade twine
 
-      - name: 🔐 Confirm target registry
+      - name: 🔐 Confirm target
         run: |
-          TARGET="${{ inputs.repository-url || 'https://upload.pypi.org/legacy/' }}"
-          echo "📡 Publishing to: $TARGET"
-          if [[ "$TARGET" == *"test.pypi"* ]]; then
-            echo "🧪 Target: TestPyPI"
-            echo "   Ensure TEST_PYPI_API_TOKEN was mapped to PYPI_API_TOKEN in your caller workflow."
-          else
-            echo "🚀 Target: PyPI"
-            echo "   Ensure PYPI_API_TOKEN is set in your project repo secrets."
-          fi
+          echo "📡 Publishing to : TestPyPI (https://test.pypi.org)"
+          echo "🏷️  Artifact      : ${{ needs.build.outputs.artifact-name }}"
 
-      - name: 📤 Upload to registry via token
+      - name: 📤 Upload to TestPyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
+          TWINE_REPOSITORY_URL: https://test.pypi.org/legacy/
+        run: twine upload dist/*
+
+  # ============================================================
+  # JOB 5: Publish to PyPI
+  # Runs when publish-target is 'pypi' or 'both'
+  # When target is 'both', waits for TestPyPI to succeed first
+  # Uses Trusted Publishing by default; falls back to PYPI_API_TOKEN
+  # ============================================================
+  publish-pypi:
+    name: 🚀 Publish to PyPI
+    needs: [build, publish-testpypi]
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      (needs.publish-testpypi.result == 'success' || needs.publish-testpypi.result == 'skipped') &&
+      startsWith(github.ref, 'refs/tags/') &&
+      !startsWith(github.ref, 'refs/tags/v') &&
+      (inputs.publish-target == 'pypi' || inputs.publish-target == 'both')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/${{ github.event.repository.name }}
+    permissions:
+      id-token: write   # Scoped here — only this job needs OIDC
+
+    steps:
+      - name: 🗃️ Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: dist/
+
+      - name: 🔐 Confirm target
+        run: |
+          echo "📡 Publishing to : PyPI (https://pypi.org)"
+          echo "🏷️  Artifact      : ${{ needs.build.outputs.artifact-name }}"
+          echo "🔑 Auth method   : ${{ inputs.use-trusted-publishing != false && 'OIDC Trusted Publishing' || 'API Token' }}"
+
+      # --- Path A: Trusted Publishing (default) ---
+      - name: 📤 Publish to PyPI (Trusted Publishing)
+        if: inputs.use-trusted-publishing != false
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://upload.pypi.org/legacy/
+
+      # --- Path B: API token fallback ---
+      - name: 🐍 Set up Python (token path)
+        if: inputs.use-trusted-publishing == false
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.11' }}
+
+      - name: 📦 Install twine (token path)
+        if: inputs.use-trusted-publishing == false
+        run: pip install --upgrade twine
+
+      - name: 📤 Publish to PyPI (API Token)
+        if: inputs.use-trusted-publishing == false
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-          TWINE_REPOSITORY_URL: ${{ inputs.repository-url || 'https://upload.pypi.org/legacy/' }}
+          TWINE_REPOSITORY_URL: https://upload.pypi.org/legacy/
         run: twine upload dist/*
