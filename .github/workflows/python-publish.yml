@@ -132,6 +132,17 @@ on:
 permissions:
   contents: read
 
+# TAG GUARD — enforced at every job level below.
+# This workflow uses setuptools_scm which derives the package version
+# from the git tag at build time. Running on a non-tag commit produces
+# a ".devN+gABCDEF" dirty version that PyPI and TestPyPI will reject.
+#
+# Every job carries:
+#   if: startsWith(github.ref, 'refs/tags/') && !startsWith(github.ref, 'refs/tags/v')
+#
+# This means callers never need to add tag conditions themselves —
+# calling this workflow on a branch push skips all jobs cleanly.
+
 jobs:
   # ============================================================
   # JOB 1: Validate the release tag (setuptools_scm aware)
@@ -149,6 +160,7 @@ jobs:
   # ============================================================
   validate-version:
     name: ✅ Validate Release Tag (setuptools_scm)
+    if: startsWith(github.ref, 'refs/tags/') && !startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -222,8 +234,11 @@ jobs:
   # ============================================================
   test:
     name: 🧪 Run Tests
+    if: |
+      startsWith(github.ref, 'refs/tags/') &&
+      !startsWith(github.ref, 'refs/tags/v') &&
+      inputs.run-tests != false
     runs-on: ubuntu-latest
-    if: ${{ inputs.run-tests != false }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory || '.' }}
@@ -333,7 +348,10 @@ jobs:
   publish-trusted:
     name: 🚀 Publish (Trusted Publishing)
     needs: build
-    if: ${{ inputs.use-trusted-publishing != false }}
+    if: |
+      startsWith(github.ref, 'refs/tags/') &&
+      !startsWith(github.ref, 'refs/tags/v') &&
+      inputs.use-trusted-publishing != false
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -374,7 +392,10 @@ jobs:
   publish-token:
     name: 🚀 Publish (API Token)
     needs: build
-    if: ${{ inputs.use-trusted-publishing == false }}
+    if: |
+      startsWith(github.ref, 'refs/tags/') &&
+      !startsWith(github.ref, 'refs/tags/v') &&
+      inputs.use-trusted-publishing == false
     runs-on: ubuntu-latest
     environment:
       name: pypi
