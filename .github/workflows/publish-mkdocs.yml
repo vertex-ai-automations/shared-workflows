@@ -104,9 +104,9 @@ jobs:
         run: |
           if [ "${{ inputs.mkdocs-strict || 'true' }}" = "true" ]; then
             mkdocs build --strict
+            ls -la
           else
             mkdocs build
-            ls -la
           fi
 
       # Upload using the official GitHub Pages artifact action
