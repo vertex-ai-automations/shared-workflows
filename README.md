@@ -1,6 +1,6 @@
 # 🏗️ Shared GitHub Actions Workflows
 
-> Centralized, reusable CI/CD workflow templates for all projects in the **your-org** GitHub Organization.
+> Centralized, reusable CI/CD workflow templates for all projects in the **vertex-ai-automations** GitHub Organization.
 
 [![Workflows](https://img.shields.io/badge/workflows-2-blue?logo=github-actions)](/.github/workflows)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
@@ -16,11 +16,8 @@
   - [Deploy MkDocs to GitHub Pages](#-deploy-mkdocs-to-github-pages)
   - [Build and Publish Python Package to PyPI](#-build-and-publish-python-package-to-pypi)
 - [Quick Start](#-quick-start)
-- [Publishing to TestPyPI](#-publishing-to-testpypi)
-  - [How It Works](#how-it-works)
-  - [TestPyPI Setup](#testpypi-setup)
-  - [Recommended Pattern: Test Then Release](#recommended-pattern-test-then-release)
-  - [TestPyPI Gotchas](#testpypi-gotchas)
+- [Publish Target Flag](#-publish-target-flag)
+- [setuptools_scm Versioning](#-setuptools_scm-versioning)
 - [Setup Guide](#-setup-guide)
   - [Organization Settings](#1-organization-settings)
   - [PyPI Trusted Publishing](#2-pypi-trusted-publishing-recommended)
@@ -37,14 +34,15 @@
 
 ## 🌐 Overview
 
-This repository (`your-org/.github`) is the **single source of truth** for CI/CD pipelines across the organization. Instead of copy-pasting workflow YAML into every project, each project calls a versioned template from here using GitHub's [reusable workflows](https://docs.github.com/en/actions/using-workflows/reusing-workflows) feature.
+This repository (`vertex-ai-automations/shared-workflows`) is the **single source of truth** for CI/CD pipelines across the organization. Instead of copy-pasting workflow YAML into every project, each project calls a versioned template from here using GitHub's [reusable workflows](https://docs.github.com/en/actions/using-workflows/reusing-workflows) feature.
 
 **Benefits:**
 
 - 🔒 **Security patches** propagate to all projects by updating one file
 - 🔁 **DRY principle** — no duplicated workflow logic across repos
-- 📌 **Version pinning** — projects can pin to a tag (e.g., `@v1.2.0`) for stability
+- 📌 **Version pinning** — projects can pin to a tag (e.g., `@1.2.0`) for stability
 - 🧩 **Configurable** — every workflow exposes `inputs` to customize behavior per project
+- 🤖 **Zero boilerplate** — artifact names and permissions are handled automatically
 - 👁️ **Auditable** — one place to review and approve CI/CD changes
 
 ---
@@ -52,22 +50,23 @@ This repository (`your-org/.github`) is the **single source of truth** for CI/CD
 ## 📁 Repository Structure
 
 ```
-your-org/.github/                   ← This repo (must be named ".github")
+vertex-ai-automations/shared-workflows/     ← This repo
 │
 ├── .github/
-│   └── workflows/                  ← All reusable workflow templates live here
-│       ├── publish-mkdocs.yml      ← MkDocs → GitHub Pages deployment
-│       └── python-publish.yml      ← Python package → PyPI publishing
+│   └── workflows/                          ← All reusable workflow templates live here
+│       ├── publish-mkdocs.yml              ← MkDocs → GitHub Pages deployment
+│       └── python-publish.yml             ← Python package → PyPI/TestPyPI publishing
 │
-├── docs/                           ← Documentation for this repo itself
-│   └── adr/                        ← Architecture Decision Records
+├── docs/
+│   └── adr/                                ← Architecture Decision Records
 │
-├── README.md                       ← You are here
+├── README.md                               ← You are here
 └── LICENSE
 ```
 
-> **Why `.github/workflows/` inside a repo named `.github`?**
-> GitHub specifically recognizes the path `your-org/.github/.github/workflows/` as the org-level shared workflow location. The double `.github` is intentional — the first is the repo name, the second is the folder path within it.
+> **How the `uses:` path works:**
+> Reusable workflows are referenced as `owner/repo/.github/workflows/filename@ref`.
+> For this repo: `vertex-ai-automations/shared-workflows/.github/workflows/python-publish.yml@main`
 
 ---
 
@@ -93,8 +92,8 @@ Builds a [MkDocs](https://www.mkdocs.org/) documentation site and deploys it to 
 
 | Decision | Reason |
 |---|---|
-| Uses `actions/deploy-pages` instead of `peaceiris/actions-gh-pages` | Official action; avoids third-party dependency for a critical deployment step |
-| `permissions: pages: write` (not `contents: write`) | Least-privilege; the workflow cannot push arbitrary commits to the repo |
+| Uses `actions/deploy-pages` instead of `peaceiris/actions-gh-pages` | Official GitHub action — no third-party dependency for a critical deployment step |
+| `permissions: pages: write` (not `contents: write`) | Least-privilege — the workflow token cannot push commits or modify branches |
 | `concurrency: cancel-in-progress: false` | Prevents a fast push from cancelling an in-flight deploy; queues instead |
 | Falls back gracefully if no requirements file found | Won't hard-fail new projects that haven't set up `docs/requirements.txt` yet |
 
@@ -104,203 +103,190 @@ Builds a [MkDocs](https://www.mkdocs.org/) documentation site and deploys it to 
 
 **File:** `.github/workflows/python-publish.yml`
 
-A multi-job pipeline that validates, tests, builds, and publishes a Python package to PyPI (or TestPyPI).
+A multi-job pipeline that validates, tests, builds, and publishes a Python package. Supports publishing to PyPI, TestPyPI, or both via a single `publish-target` flag.
 
-**What it does:**
+**Job DAG:**
 
 ```
 validate-version ──┐
-                   ├──▶ build ──▶ publish-trusted  (OIDC, recommended)
-test ──────────────┘         └──▶ publish-token    (API token, fallback)
+                   ├──▶ build ──▶ publish-testpypi ──▶ publish-pypi
+test ──────────────┘               (if target includes    (if target includes
+(continue-on-error)                 testpypi)              pypi)
 ```
 
-1. **`validate-version`** — Extracts the version from `pyproject.toml` or `setup.cfg` and asserts it matches the git tag. Prevents mis-tagged releases.
-2. **`test`** — Runs your test suite with a configurable command before any artifact is built.
-3. **`build`** — Installs `build` + `twine`, runs `python -m build`, validates metadata with `twine check`, and uploads artifacts.
-4. **`publish-trusted`** *(default)* — Uses OIDC Trusted Publishing (no secrets required). Runs inside a protected `pypi` GitHub Environment.
-5. **`publish-token`** *(fallback)* — Uses `PYPI_API_TOKEN` secret for projects that haven't set up Trusted Publishing yet.
+**What each job does:**
+
+1. **`validate-version`** — Validates the git tag is clean SemVer (`X.Y.Z`), installs `setuptools_scm`, resolves the version from the tag, and asserts they match exactly. Catches dirty/dev tags before any artifact is built.
+2. **`test`** — Runs your test suite with a configurable command. Marked `continue-on-error: true` — failures are reported in the UI but do not block publishing.
+3. **`build`** — Installs `build` + `twine`, runs `python -m build`, prints the version stamped into the wheel by `setuptools_scm`, validates metadata with `twine check`, and uploads the artifact named `{repo-name}-dist`.
+4. **`publish-testpypi`** — Publishes to TestPyPI using `TEST_PYPI_API_TOKEN`. Skipped when `run-tests: false` or `publish-target: pypi`.
+5. **`publish-pypi`** — Publishes to real PyPI. When `publish-target: both`, waits for `publish-testpypi` to succeed first. Uses OIDC Trusted Publishing by default; falls back to `PYPI_API_TOKEN` if `use-trusted-publishing: false`.
 
 **Key design decisions:**
 
 | Decision | Reason |
 |---|---|
-| Version validation job | PyPI releases cannot be deleted or overwritten; a version mismatch is caught before any artifact is built |
-| Tests run before build | Catches regressions before a broken package is uploaded |
-| Trusted Publishing as default | More secure than long-lived API tokens; tokens can be rotated or leaked |
-| `environment: pypi` enabled | Enforces GitHub's manual approval gate and deployment protection rules |
-| No `--verbose` on twine | Verbose output can expose token fragments in logs |
-| Separate build and publish jobs | Artifacts are immutable between jobs; what was tested is exactly what was published |
+| `publish-target` flag replaces `repository-url` + `use-trusted-publishing` pair | Single input controls the entire publish flow — callers don't need to know which URL maps to which registry |
+| `setuptools_scm` version validation instead of static `pyproject.toml` read | Projects using `dynamic = ["version"]` have no static version field — version is derived from the git tag at build time |
+| All jobs tag-gated internally | Callers never need `if: startsWith(github.ref, 'refs/tags/')` — non-tag pushes skip all jobs cleanly |
+| `permissions` declared inside the workflow | Callers do not need `permissions:` blocks on the publish job |
+| `continue-on-error: true` on `test` job | Test results are visible in the UI without blocking a release — useful when publishing hotfixes |
+| `publish-testpypi` skipped when `run-tests: false` | TestPyPI is the pre-release validation gate — bypassing tests bypasses the sandbox too |
+| `publish-testpypi` runs before `publish-pypi` when target is `both` | TestPyPI confirms the upload works cleanly before the immutable real release |
+| Trusted Publishing as default for PyPI | More secure than long-lived API tokens — no secrets to rotate or leak |
+| Artifact name auto-derived from repo name | Eliminates per-project configuration — repo `custom-logger` → artifact `custom-logger-dist` |
+| `fetch-depth: 0` + `fetch-tags: true` on all checkout steps | `setuptools_scm` requires full git history to resolve the version — shallow clones produce `0.1.dev0` |
 
 ---
 
 ## 🚀 Quick Start
 
-Add this file to your project repo at `.github/workflows/release.yml`.
-
-**Minimal setup** (docs + PyPI publish on tag only):
+Create `.github/workflows/release.yml` in your project repo:
 
 ```yaml
 name: 🚢 Release
 
 on:
   push:
-    branches: [main]       # triggers docs deploy
-    tags: ["v*.*.*"]       # triggers PyPI publish
+    branches: [main]    # docs deploy only
+    tags: ["*.*.*"]     # publish only — bare SemVer e.g. 1.2.1
+  workflow_dispatch:    # manual trigger — docs only
 
 jobs:
 
+  # 📚 Deploy docs on push to main and manual trigger
   docs:
-    uses: your-org/.github/.github/workflows/publish-mkdocs.yml@main
+    name: 📚 Deploy Docs
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    uses: vertex-ai-automations/shared-workflows/.github/workflows/publish-mkdocs.yml@main
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     with:
       python-version: "3.11"
       docs-requirements: "docs/requirements.txt"
-      src-layout: true
+      src-layout: true       # set false if not using src/ layout
+      mkdocs-strict: true    # set false to allow doc build warnings
     secrets: inherit
 
+  # 📦 Build and publish — tag-gated inside the reusable workflow
+  # Non-tag pushes skip all publish jobs cleanly — no if: needed here
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    uses: your-org/.github/.github/workflows/python-publish.yml@main
+    name: 📦 Publish Package
+    uses: vertex-ai-automations/shared-workflows/.github/workflows/python-publish.yml@main
     with:
       python-version: "3.11"
-      artifact-name: "my-package-dist"
       run-tests: true
-      test-command: "pytest tests/ -v"
-      use-trusted-publishing: true
+      test-command: "pytest tests/ -v --tb=short"
+      publish-target: "both"       # 'both' | 'pypi' | 'testpypi'
+      use-trusted-publishing: true # set false to use PYPI_API_TOKEN instead
     secrets: inherit
 ```
 
-> Want to also validate against **TestPyPI** on every merge? See [Publishing to TestPyPI → Recommended Pattern](#recommended-pattern-test-then-release) for a complete example with both jobs.
+**Trigger matrix:**
 
----
+| Event | `docs` | `publish` |
+|---|---|---|
+| Push to `main` | ✅ runs | ⛔ all publish jobs skip (no tag) |
+| Push tag `1.2.1` | ⛔ skipped | ✅ testpypi → pypi |
+| Manual dispatch | ✅ runs | ⛔ all publish jobs skip (no tag) |
 
-## 🧪 Publishing to TestPyPI
+**To release a new version:**
 
-The `python-publish.yml` workflow supports publishing to [TestPyPI](https://test.pypi.org) — a fully separate sandbox registry — via the `repository-url` input. This lets you validate your packaging pipeline and package metadata before committing to a real PyPI release.
-
-### How It Works
-
-The `repository-url` input controls which registry receives the upload:
-
-```yaml
-# Default — publishes to the real PyPI
-repository-url: "https://upload.pypi.org/legacy/"
-
-# Override — publishes to TestPyPI sandbox instead
-repository-url: "https://test.pypi.org/legacy/"
+```bash
+# Tag and push — that's it. setuptools_scm reads the tag for the version.
+git tag 1.2.1
+git push origin 1.2.1
 ```
 
-Everything else in the pipeline (version validation, tests, build, metadata check) runs identically regardless of target registry.
+> **Note:** `permissions:` is only required on the `docs` job (MkDocs needs `pages: write`).
+> The `publish` job has no `permissions:` block — they are declared inside `python-publish.yml`.
 
 ---
 
-### TestPyPI Setup
+## 🎯 Publish Target Flag
 
-TestPyPI and PyPI are **completely independent systems**. Accounts, packages, and Trusted Publishers are not shared between them. You must set each up separately.
+The `publish-target` input controls which registries receive the built package:
 
-#### Option A — Trusted Publishing on TestPyPI (recommended)
-
-1. Register or log in at [test.pypi.org](https://test.pypi.org)
-2. Navigate to your project → **Managing** → **Publishing** → **Add a new publisher**
-3. Fill in the same fields as your PyPI publisher, but point to the `test-publish` environment:
-
-| Field | Value |
+| Value | Behaviour |
 |---|---|
-| Owner | `your-org` |
-| Repository name | `your-project-repo` |
-| Workflow name | `release.yml` *(your caller workflow)* |
-| Environment name | `test-pypi` |
+| `"both"` *(default)* | Publishes to TestPyPI first, then PyPI. PyPI only runs if TestPyPI succeeds. |
+| `"pypi"` | Publishes to PyPI only. TestPyPI job is skipped. |
+| `"testpypi"` | Publishes to TestPyPI only. PyPI job is skipped. |
 
-4. Create a matching GitHub Environment named `test-pypi` in your project repo:
-   - **Settings** → **Environments** → **New environment** → name it `test-pypi`
-   - No required reviewers needed (it's just a sandbox)
+**Interaction with `run-tests`:**
 
-#### Option B — API Token Fallback
+| `publish-target` | `run-tests` | `test` | `publish-testpypi` | `publish-pypi` |
+|---|---|---|---|---|
+| `both` | `true` | ✅ (non-blocking) | ✅ | ✅ waits for testpypi |
+| `both` | `false` | ⛔ skipped | ⛔ skipped | ✅ runs directly |
+| `pypi` | `true` | ✅ (non-blocking) | ⛔ skipped | ✅ |
+| `pypi` | `false` | ⛔ skipped | ⛔ skipped | ✅ |
+| `testpypi` | `true` | ✅ (non-blocking) | ✅ | ⛔ skipped |
+| `testpypi` | `false` | ⛔ skipped | ⛔ skipped | ⛔ skipped |
 
-1. Generate a token at [test.pypi.org/manage/account/token](https://test.pypi.org/manage/account/token/)
-2. Add it as a repo secret named `TEST_PYPI_API_TOKEN` in your project repo
-3. Use it in your caller workflow:
+> **TestPyPI uses `TEST_PYPI_API_TOKEN` always** — token auth only, no Trusted Publishing.
+> **PyPI uses Trusted Publishing by default** — set `use-trusted-publishing: false` to use `PYPI_API_TOKEN` instead.
 
-```yaml
-with:
-  use-trusted-publishing: false
-  repository-url: "https://test.pypi.org/legacy/"
-secrets:
-  PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
-```
+**TestPyPI gotchas:**
 
-> Keep `TEST_PYPI_API_TOKEN` and `PYPI_API_TOKEN` as separate secrets — they are issued by different systems and should never be mixed up.
-
----
-
-### Recommended Pattern: Test Then Release
-
-The cleanest approach is two jobs in your caller workflow — one that fires on every merge to `main` (TestPyPI) and one that fires only on version tags (real PyPI). This ensures every merge proves the package is publishable before you ever cut a release.
-
-```yaml
-name: 🚢 Release
-
-on:
-  push:
-    branches: [main]      # test publish on every merge
-    tags: ["v*.*.*"]      # real publish only on version tags
-
-jobs:
-
-  docs:
-    uses: your-org/.github/.github/workflows/publish-mkdocs.yml@main
-    with:
-      python-version: "3.11"
-      docs-requirements: "docs/requirements.txt"
-      src-layout: true
-    secrets: inherit
-
-  # ✅ Runs on every push to main — validates the full pipeline against TestPyPI
-  test-publish:
-    if: github.ref == 'refs/heads/main'
-    uses: your-org/.github/.github/workflows/python-publish.yml@main
-    with:
-      artifact-name: "my-package-dist-test"       # must differ from prod artifact name
-      run-tests: true
-      test-command: "pytest tests/ -v --tb=short"
-      use-trusted-publishing: true                 # or false + TEST_PYPI_API_TOKEN
-      repository-url: "https://test.pypi.org/legacy/"
-    secrets: inherit
-
-  # 🚀 Runs only on version tags — publishes to real PyPI
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    uses: your-org/.github/.github/workflows/python-publish.yml@main
-    with:
-      artifact-name: "my-package-dist"
-      run-tests: true
-      test-command: "pytest tests/ -v --tb=short"
-      use-trusted-publishing: true
-      repository-url: "https://upload.pypi.org/legacy/"
-    secrets: inherit
-```
-
-**What this gives you:**
-
-| Event | Docs | TestPyPI | PyPI |
-|---|---|---|---|
-| Push to `main` | ✅ deployed | ✅ published | ⛔ skipped |
-| Push `v1.2.3` tag | ⛔ skipped | ⛔ skipped | ✅ published |
+- TestPyPI and PyPI are completely independent systems. Accounts, packages, and tokens are not shared.
+- TestPyPI rejects duplicate versions. Each upload must have a unique version — you cannot re-push the same tag.
+- TestPyPI doesn't mirror all PyPI dependencies. To install from TestPyPI with fallback to PyPI:
+  ```bash
+  pip install --index-url https://test.pypi.org/simple/ \
+              --extra-index-url https://pypi.org/simple/ \
+              your-package
+  ```
 
 ---
 
-### TestPyPI Gotchas
+## 🏷️ setuptools_scm Versioning
 
-> **Version uniqueness** — TestPyPI rejects duplicate versions just like PyPI. Each upload must have a unique version number. Use a `.devN` suffix (e.g., `1.2.3.dev1`) for test builds, or automate it with the build number:
-> ```toml
-> # pyproject.toml — bump this before each test upload
-> version = "1.2.3.dev1"
-> ```
+These workflows are designed for projects that use [`setuptools_scm`](https://github.com/pypa/setuptools_scm) for dynamic versioning — the version is derived from the git tag at build time rather than hardcoded in `pyproject.toml`.
 
-> **Package not installable** — TestPyPI doesn't mirror all of PyPI's dependencies. `pip install --index-url https://test.pypi.org/simple/ my-package` may fail if your dependencies aren't also on TestPyPI. Use `--extra-index-url https://pypi.org/simple/` to fall back to real PyPI for dependencies.
+**Typical `pyproject.toml` setup:**
 
-> **Trusted Publisher must be registered on TestPyPI separately** — even if your PyPI Trusted Publisher is set up correctly, TestPyPI will reject OIDC tokens unless you've added a publisher there too.
+```toml
+[project]
+dynamic = ["version"]           # no static version = "x.x.x" here
 
-> **`artifact-name` must differ** — if your `test-publish` and `publish` jobs run in the same workflow, they must use different `artifact-name` values to avoid upload collisions.
+[tool.setuptools_scm]
+version_file = "src/your_package/_version.py"   # stamped at build time
+```
+
+**How the workflow handles this:**
+
+The `validate-version` job performs three checks before anything is built:
+
+1. **Format check** — asserts the tag matches `X.Y.Z` (no `.devN`, `rc`, or `+local` suffixes that PyPI would reject)
+2. **Resolution check** — installs `setuptools_scm` and calls `get_version()` to confirm the tag is reachable
+3. **Exact match check** — if the tag is not on the HEAD commit, `setuptools_scm` appends `.devN+gABCDEF` — this catches that and tells you how to fix it
+
+All three checkout steps (`validate-version`, `test`, `build`) use `fetch-depth: 0` and `fetch-tags: true` — required so `setuptools_scm` can walk the full tag history. A shallow clone always produces `0.1.dev0`.
+
+**If the validation fails:**
+
+```
+❌ Version mismatch!
+   Tag version      : 1.2.1
+   Resolved version : 1.2.1.dev3+g4f2c1a0
+
+   setuptools_scm appended a dev suffix — the tag is likely not on HEAD.
+   Delete the tag, ensure HEAD is the release commit, then re-tag:
+   git tag 1.2.1 && git push origin 1.2.1
+```
+
+Fix:
+
+```bash
+git tag -d 1.2.1               # delete local tag
+git push origin :refs/tags/1.2.1   # delete remote tag
+# ensure the commit you want is HEAD, then:
+git tag 1.2.1
+git push origin 1.2.1
+```
 
 ---
 
@@ -308,15 +294,13 @@ jobs:
 
 ### 1. Organization Settings
 
-Allow the shared workflows to be called from other repos in the org:
+Allow shared workflows to be called from other repos in the org:
 
-1. Go to **`github.com/your-org`** → **Settings**
+1. Go to **`github.com/vertex-ai-automations`** → **Settings**
 2. Navigate to **Actions** → **General**
 3. Under **"Access"**, select:
-   > ✅ Accessible from repositories in the **your-org** organization
+   > ✅ Accessible from repositories in the **vertex-ai-automations** organization
 4. Click **Save**
-
-> If this setting is missing, your org may be on a plan that doesn't support it. Check GitHub's [pricing page](https://github.com/pricing) for reusable workflow availability.
 
 ---
 
@@ -332,17 +316,16 @@ Trusted Publishing uses OIDC — no API token needed, no secret to rotate or lea
 
 | Field | Value |
 |---|---|
-| Owner | `your-org` |
+| Owner | `vertex-ai-automations` |
 | Repository name | `your-project-repo` |
-| Workflow name | `release.yml` *(the caller workflow, not the template)* |
+| Workflow name | `release.yml` |
 | Environment name | `pypi` |
 
-**Step 4:** In your **project repo**, create a GitHub Environment named `pypi`:
-- Go to **Settings** → **Environments** → **New environment**
-- Name it `pypi`
-- Optionally add **Required reviewers** for manual approval before every release
+**Step 4:** In your project repo, create a GitHub Environment named `pypi`:
+- **Settings** → **Environments** → **New environment** → name it `pypi`
+- Optionally add **Required reviewers** for a manual approval gate before every release
 
-> The `environment: pypi` block in the workflow + the matching environment name in PyPI publisher settings is what makes Trusted Publishing work.
+> Trusted Publishing is only configured for the real PyPI. TestPyPI always uses `TEST_PYPI_API_TOKEN`.
 
 ---
 
@@ -352,35 +335,46 @@ Enable Pages in each project repo that uses the MkDocs workflow:
 
 1. Go to **Settings** → **Pages**
 2. Under **Source**, select: **GitHub Actions**
-3. Save — no branch selection needed (the workflow handles it)
+3. Save — no branch selection needed
 
-> The workflow uses `permissions: pages: write` and `id-token: write`. If your organization restricts these permissions, you may need to explicitly allow them in org-level Action settings.
+> The `docs` job in your caller workflow must declare `permissions: pages: write` and `id-token: write`.
+> This is the only job that requires caller-side permissions — the `publish` job handles its own internally.
 
 ---
 
 ### 4. Secrets & Environments
 
-#### If using Trusted Publishing (recommended)
-No secrets needed. Only the `pypi` GitHub Environment (see above).
+**GitHub Environments** (create once per project repo):
 
-#### If using API token fallback
-
-| Secret Name | Scope | Description |
+| Environment | Purpose | Reviewers |
 |---|---|---|
-| `PYPI_API_TOKEN` | Project repo | PyPI API token scoped to the specific package |
+| `pypi` | Real PyPI publish gate | Optional — add for manual approval |
+| `test-pypi` | TestPyPI sandbox | None needed |
 
-To add the secret:
-1. Go to your **project repo** → **Settings** → **Secrets and variables** → **Actions**
-2. Click **New repository secret**
-3. Name: `PYPI_API_TOKEN`, Value: your PyPI token (starts with `pypi-`)
+Settings → Environments → New environment.
 
-> Never add the PyPI token to the `.github` shared repo — it belongs in each individual project repo.
+**Secrets** (add to your project repo, not here):
+
+| Secret | When required |
+|---|---|
+| `TEST_PYPI_API_TOKEN` | `publish-target: testpypi` or `both` |
+| `PYPI_API_TOKEN` | `use-trusted-publishing: false` only |
+
+To add a secret: **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
+
+Generate tokens at:
+- [pypi.org/manage/account/token](https://pypi.org/manage/account/token/)
+- [test.pypi.org/manage/account/token](https://test.pypi.org/manage/account/token/)
+
+> Keep `TEST_PYPI_API_TOKEN` and `PYPI_API_TOKEN` as separate secrets — they are issued by different systems.
+
+Pass both to the workflow with `secrets: inherit` in your caller — the template reads them by name.
 
 ---
 
 ### 5. Docs Requirements File
 
-Create `docs/requirements.txt` in your project with **pinned** versions for reproducible builds:
+Create `docs/requirements.txt` in your project with pinned versions for reproducible builds:
 
 ```txt
 # docs/requirements.txt
@@ -391,7 +385,7 @@ black==24.4.0
 # mkdocs-git-revision-date-localized-plugin==1.2.4
 ```
 
-> Without a pinned requirements file, the workflow falls back to unpinned installs and prints a warning. This is acceptable for getting started but not recommended for production.
+> If this file is missing the workflow falls back to unpinned installs and prints a warning. Acceptable for getting started, not recommended for production.
 
 ---
 
@@ -407,78 +401,158 @@ black==24.4.0
 | `mkdocs-strict` | `boolean` | `true` | Fail on MkDocs warnings |
 | `working-directory` | `string` | `"."` | Root directory (for monorepos) |
 
+**Required caller permissions:**
+
+```yaml
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+```
+
+---
+
 ### `python-publish.yml`
 
 | Input | Type | Default | Description |
 |---|---|---|---|
 | `python-version` | `string` | `"3.11"` | Python version for build and test |
-| `artifact-name` | `string` | `"python-package-dist"` | Name of the build artifact — **must be unique per project** |
-| `run-tests` | `boolean` | `true` | Run tests before publishing |
+| `run-tests` | `boolean` | `true` | Run tests before publishing. Failures are non-blocking (`continue-on-error`). Set `false` to skip tests and TestPyPI entirely. |
 | `test-command` | `string` | `"pytest"` | Test command to execute |
-| `use-trusted-publishing` | `boolean` | `true` | Use OIDC Trusted Publishing; set `false` to use token |
-| `repository-url` | `string` | `https://upload.pypi.org/legacy/` | Override to `https://test.pypi.org/legacy/` to publish to TestPyPI |
+| `publish-target` | `string` | `"both"` | `"both"` → testpypi then pypi · `"pypi"` → pypi only · `"testpypi"` → testpypi only |
+| `use-trusted-publishing` | `boolean` | `true` | Use OIDC Trusted Publishing for PyPI. Set `false` to use `PYPI_API_TOKEN` instead. TestPyPI always uses `TEST_PYPI_API_TOKEN` regardless. |
 | `working-directory` | `string` | `"."` | Root directory (for monorepos) |
+
+**Secrets:**
 
 | Secret | Required | Description |
 |---|---|---|
-| `PYPI_API_TOKEN` | Only if `use-trusted-publishing: false` | PyPI **or** TestPyPI API token — keep these as separate secrets (`PYPI_API_TOKEN` vs `TEST_PYPI_API_TOKEN`) |
+| `TEST_PYPI_API_TOKEN` | When `publish-target` is `testpypi` or `both` | Token from test.pypi.org |
+| `PYPI_API_TOKEN` | When `use-trusted-publishing: false` | Token from pypi.org |
+
+Pass both via `secrets: inherit` — the workflow reads them by name.
+
+**Permissions:** Declared inside `python-publish.yml` — **no `permissions:` block needed on the caller job**.
+
+> **`artifact-name` is not an input.** The name is automatically set to `{repo-name}-dist` (e.g., `custom-logger-dist`).
 
 ---
 
 ## 🔁 Migration Guide
 
-If your project currently has its own inline `publish-mkdocs.yml` or `python-publish.yml`, follow these steps:
+If your project has existing inline workflow files, follow these steps.
 
-**Step 1:** Complete the [Setup Guide](#-setup-guide) above for your project repo.
+**Step 1:** Complete the [Setup Guide](#-setup-guide) for your project repo.
 
-**Step 2:** Delete the old workflow files from your project:
+**Step 2:** Delete old workflow files:
+
 ```bash
 git rm .github/workflows/publish-mkdocs.yml
 git rm .github/workflows/python-publish.yml
 ```
 
-**Step 3:** Create the new caller workflow at `.github/workflows/release.yml` (see [Quick Start](#-quick-start)).
+**Step 3:** Create `.github/workflows/release.yml` from the [Quick Start](#-quick-start) example above.
 
-**Step 4:** Push and verify the workflow runs correctly. Check the **Actions** tab in your project repo.
+**Step 4:** Remove any `artifact-name`, `repository-url`, or `use-trusted-publishing` inputs from old callers — these have been replaced by `publish-target`.
 
-**Step 5:** If migrating the MkDocs workflow, verify your GitHub Pages source is set to **GitHub Actions** (not a branch).
+**Step 5:** Remove `permissions:` blocks from your `publish` job — they are now declared inside the reusable workflow. Keep `permissions:` on the `docs` job.
 
-> **Tip:** Validate against TestPyPI before your first real release. See [Publishing to TestPyPI](#-publishing-to-testpypi) for the full recommended pattern.
+**Step 6:** If your project uses `setuptools_scm`, remove any version comparison logic — the workflow handles this automatically. See [setuptools_scm Versioning](#-setuptools_scm-versioning).
+
+**Step 7:** Confirm **Settings** → **Pages** → Source is **GitHub Actions** (not a branch).
+
+**Step 8:** Push and verify in the **Actions** tab.
 
 ---
 
 ## 🔍 Troubleshooting
 
-### ❌ `Error: caller workflow does not have permission to use 'your-org/.github'`
+### ❌ `Error: caller workflow does not have permission to use 'vertex-ai-automations/shared-workflows'`
 
 The organization hasn't granted access to this shared repo.
 → Follow [Organization Settings](#1-organization-settings) above.
 
 ---
 
-### ❌ `Version mismatch! Tag v1.2.3 does not match package version 1.2.0`
+### ❌ `The workflow is requesting 'pages: write', but is only allowed 'pages: none'`
 
-The git tag you pushed doesn't match the version in `pyproject.toml`.
-→ Update `version` in `pyproject.toml`, commit, then re-tag:
+The caller workflow is missing the required permissions on the `docs` job.
+→ Add this to the `docs` job in your `release.yml`:
+
+```yaml
+docs:
+  uses: vertex-ai-automations/shared-workflows/.github/workflows/publish-mkdocs.yml@main
+  permissions:
+    contents: read
+    pages: write
+    id-token: write
+```
+
+---
+
+### ❌ `Creating Pages deployment failed — Not Found (404)`
+
+GitHub Pages hasn't been enabled on the project repo yet.
+→ Go to **Settings** → **Pages** → **Source** → select **GitHub Actions**, then re-run the failed job.
+
+---
+
+### ❌ `setuptools_scm could not resolve a version`
+
+The tag hasn't been pushed yet when the workflow runs, or the repo was checked out as a shallow clone.
+→ Ensure the tag is pushed before the workflow triggers, and that `fetch-depth: 0` is in your checkout step (already set in this template).
+
+---
+
+### ❌ `Version mismatch — setuptools_scm resolved 1.2.1.dev3+g4f2c1a0`
+
+The tag was pushed on a commit that is not HEAD. `setuptools_scm` appended a dev suffix.
+→ Delete the tag, confirm the correct commit is HEAD, and re-tag:
+
 ```bash
-git tag -d v1.2.3          # delete local tag
-git push origin :v1.2.3    # delete remote tag
-# update pyproject.toml, commit
-git tag v1.2.3
-git push origin v1.2.3
+git tag -d 1.2.1
+git push origin :refs/tags/1.2.1
+git tag 1.2.1
+git push origin 1.2.1
+```
+
+---
+
+### ❌ `Tag '1.2.1rc1' is not valid SemVer (expected X.Y.Z)`
+
+The tag contains a pre-release suffix. PyPI accepts these but the org convention is clean `X.Y.Z` tags.
+→ Delete the tag and re-tag with a plain version: `git tag 1.2.1`
+
+---
+
+### ❌ `tar: site: Cannot open: No such file or directory`
+
+`mkdocs build` failed or `mkdocs.yml` is missing, so no `site/` folder was produced.
+→ Check:
+1. Does `mkdocs.yml` exist at the repo root?
+2. Does `docs/index.md` exist?
+3. Did the **🔨 Build MkDocs site** step succeed in the logs?
+
+Add this debug step after `mkdocs build` to inspect the runner filesystem:
+
+```yaml
+- name: 🐛 Debug — list files after build
+  if: always()
+  run: |
+    echo "--- Repo root ---" && ls -la
+    echo "--- Site folder ---"
+    ls -la site/ 2>/dev/null || echo "⚠️ site/ folder does not exist"
+    echo "--- MkDocs config ---"
+    cat mkdocs.yml 2>/dev/null || echo "⚠️ mkdocs.yml not found"
 ```
 
 ---
 
 ### ❌ MkDocs build fails with `--strict`
 
-A warning in your docs is being treated as an error.
-→ Check the build log for the specific warning. Common causes:
-- Broken internal links (`[Page](./missing.md)`)
-- Missing mkdocstrings docstrings
-- Plugin configuration errors
+A warning is being treated as a build error. Common causes: broken internal links, missing `mkdocstrings` docstrings, or plugin misconfiguration.
+→ Temporarily disable strict mode while debugging:
 
-To temporarily disable strict mode while debugging:
 ```yaml
 with:
   mkdocs-strict: false
@@ -486,34 +560,19 @@ with:
 
 ---
 
-### ❌ GitHub Pages shows old content after deploy
+### ❌ TestPyPI publish fails with 400 Bad Request
 
-GitHub Pages can take 1–2 minutes to propagate. If it persists:
-1. Check **Actions** → latest workflow run → `deploy-docs` job for errors
-2. Confirm **Settings** → **Pages** → Source is set to **GitHub Actions** (not a branch)
-3. Hard refresh your browser (`Ctrl+Shift+R` / `Cmd+Shift+R`)
+Common causes:
 
----
-
-### ❌ `artifact-name` collision between projects
-
-If two projects use the same `artifact-name` in the same workflow run context, artifact uploads can conflict.
-→ Set a unique `artifact-name` per project:
-```yaml
-with:
-  artifact-name: "my-specific-package-dist"
-```
+- **Duplicate version** — TestPyPI rejects re-uploads of the same version. You cannot re-push a tag that was already uploaded. Use a new tag.
+- **Package not yet registered on TestPyPI** — upload manually once via `twine upload --repository testpypi dist/*` to create the project entry.
+- **Wrong token** — confirm `TEST_PYPI_API_TOKEN` was generated at [test.pypi.org](https://test.pypi.org), not pypi.org.
 
 ---
 
-### ❌ TestPyPI publish fails with 400 error
+### ❌ `publish-testpypi` is skipped unexpectedly
 
-The most common causes:
-
-- **Duplicate version** — TestPyPI rejects re-uploads of the same version. Bump to a `.devN` suffix (e.g., `1.2.3.dev2`) and try again.
-- **Package not registered on TestPyPI** — unlike PyPI, TestPyPI sometimes requires the project to exist before the first upload. Upload manually once via `twine upload --repository testpypi dist/*`.
-- **Trusted Publisher not set up on TestPyPI** — even if PyPI Trusted Publishing works, TestPyPI requires its own separate publisher entry. See [TestPyPI Setup](#testpypi-setup).
-- **Wrong secret used** — confirm `TEST_PYPI_API_TOKEN` was generated from [test.pypi.org](https://test.pypi.org), not pypi.org.
+This job is skipped when `run-tests: false` OR when `publish-target: pypi`. Check both inputs in your caller workflow.
 
 ---
 
@@ -523,44 +582,44 @@ All changes to workflows in this repo affect every project in the org. Please fo
 
 1. **Open an issue** describing the proposed change and which workflows it affects
 2. **Create a branch** from `main` (e.g., `feat/add-caching-to-mkdocs`)
-3. **Test locally** where possible; use `act` ([nektos/act](https://github.com/nektos/act)) to run workflows locally
-4. **Open a pull request** — require at least **one review** from a team member before merging
-5. **Tag a release** after merging so consuming projects can pin to the new version (see below)
+3. **Test locally** where possible — use [`act`](https://github.com/nektos/act) to run workflows locally before pushing
+4. **Open a pull request** — require at least one review from a team member before merging
+5. **Tag a release** after merging so consuming projects can pin to the new version
 
-> Breaking changes (removing or renaming inputs) **must** increment the major version tag and be documented in the changelog.
+> Breaking changes (removing or renaming inputs) **must** increment the major version tag and be documented in a changelog entry.
 
 ---
 
 ## 📌 Versioning & Pinning
 
-This repo uses [semantic versioning](https://semver.org/) via git tags.
+This repo uses bare [SemVer](https://semver.org/) tags (e.g., `1.2.0`) — no `v` prefix, consistent with the org convention.
 
-### For stability, pin to a tag in your project:
-
-```yaml
-# Pinned to a specific release — won't break on upstream changes
-uses: your-org/.github/.github/workflows/publish-mkdocs.yml@v1.2.0
-```
-
-### For always-latest, use `@main`:
+**Pin to a tag for stability:**
 
 ```yaml
-# Follows HEAD — gets fixes automatically but may get breaking changes
-uses: your-org/.github/.github/workflows/publish-mkdocs.yml@main
+uses: vertex-ai-automations/shared-workflows/.github/workflows/publish-mkdocs.yml@1.2.0
+uses: vertex-ai-automations/shared-workflows/.github/workflows/python-publish.yml@1.2.0
 ```
 
-### Tagging a new release (maintainers only):
+**Use `@main` for always-latest:**
+
+```yaml
+uses: vertex-ai-automations/shared-workflows/.github/workflows/publish-mkdocs.yml@main
+uses: vertex-ai-automations/shared-workflows/.github/workflows/python-publish.yml@main
+```
+
+**Tag a new release (maintainers only):**
 
 ```bash
-git tag -a v1.2.0 -m "Release v1.2.0: add monorepo working-directory support"
-git push origin v1.2.0
+git tag -a 1.2.0 -m "Release 1.2.0: add publish-target flag, move permissions into template"
+git push origin 1.2.0
 ```
 
-| Tag strategy | Use case |
+| Strategy | Use case |
 |---|---|
-| `@main` | Development / teams that want automatic updates |
-| `@v1` | Major version floating tag — gets patches and minor updates |
-| `@v1.2.0` | Fully pinned — maximum stability, manual upgrade required |
+| `@main` | Teams that want automatic updates |
+| `@1` | Major version floating tag — gets patches and minor updates |
+| `@1.2.0` | Fully pinned — maximum stability, manual upgrade required |
 
 ---
 
