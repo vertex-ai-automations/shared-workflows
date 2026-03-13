@@ -101,7 +101,7 @@ jobs:
           else
             echo "⚠️  No requirements file found at ${{ inputs.docs-requirements || 'docs/requirements.txt' }}"
             echo "⚠️  Falling back to unpinned install. Pin your deps for reproducible builds!"
-            pip install mkdocs-material mkdocstrings[python]
+            pip install mkdocs-material mkdocstrings-python mkdocs-git-revision-date-localized-plugin mkdocs-git-authors-plugin
           fi
 
       - name: 🔧 Configure PYTHONPATH for src layout
