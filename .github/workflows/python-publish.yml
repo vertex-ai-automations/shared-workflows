@@ -1,0 +1,268 @@
+# ==============================================================================
+# 📦 Reusable Workflow: Build and Publish Python Package to PyPI
+# ==============================================================================
+# USAGE — call this from your project repo's release workflow:
+#
+#   on:
+#     push:
+#       tags: ["v*.*.*"]
+#
+#   jobs:
+#     publish:
+#       uses: your-org/shared-workflows/.github/workflows/python-publish.yml@main
+#       with:
+#         python-version: '3.11'
+#         run-tests: true
+#         test-command: 'pytest tests/ -v'
+#       secrets: inherit
+#
+# NOTE: The build artifact name is automatically derived from the calling
+#       repository name (e.g. "custom-logger-dist"). No manual configuration needed.
+#
+# SETUP (Trusted Publishing — recommended):
+#   1. Go to pypi.org → your project → Publishing → Add a publisher
+#   2. Set: owner=your-org, repo=your-repo, workflow=release.yml
+#   3. Use the OIDC job below (no secret needed)
+#
+# SETUP (Token fallback):
+#   1. Generate an API token at pypi.org/manage/account/token/
+#   2. Add it as repo secret: PYPI_API_TOKEN
+# ==============================================================================
+
+name: 📦 Build and Publish Python Package to PyPI
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version used to build the package"
+        type: string
+        default: "3.11"
+      run-tests:
+        description: "Run tests before publishing"
+        type: boolean
+        default: true
+      test-command:
+        description: "Command to run tests (if run-tests is true)"
+        type: string
+        default: "pytest"
+      use-trusted-publishing:
+        description: "Use OIDC Trusted Publishing (recommended). Set false to use PYPI_API_TOKEN secret."
+        type: boolean
+        default: true
+      repository-url:
+        description: "PyPI repository URL. Override to use TestPyPI: https://test.pypi.org/legacy/"
+        type: string
+        default: "https://upload.pypi.org/legacy/"
+      working-directory:
+        description: "Working directory (monorepo support)"
+        type: string
+        default: "."
+    secrets:
+      PYPI_API_TOKEN:
+        description: "PyPI API token (only required if use-trusted-publishing is false)"
+        required: false
+
+  # Allow manual triggering (useful for TestPyPI releases)
+  workflow_dispatch:
+    inputs:
+      repository-url:
+        description: "Target PyPI URL"
+        type: string
+        default: "https://upload.pypi.org/legacy/"
+
+# Minimal permissions — publish job adds id-token conditionally
+permissions:
+  contents: read
+
+# Derive a unique artifact name from the calling repo automatically.
+# e.g. repo "custom-logger" → artifact "custom-logger-dist"
+# This ensures no collisions between projects without any manual configuration.
+env:
+  ARTIFACT_NAME: ${{ github.event.repository.name }}-dist
+
+jobs:
+  # ============================================================
+  # JOB 1: Validate tag matches package version
+  # ============================================================
+  validate-version:
+    name: ✅ Validate Tag vs Package Version
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+
+    steps:
+      - name: 🔄 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.11' }}
+
+      - name: 🏷️ Check tag matches package version
+        run: |
+          # Extract version from pyproject.toml or setup.cfg
+          if [ -f "pyproject.toml" ]; then
+            PKG_VERSION=$(python -c "import tomllib; f=open('pyproject.toml','rb'); d=tomllib.load(f); print(d['project']['version'])" 2>/dev/null || \
+                          grep -Po '(?<=^version = ")[^"]+' pyproject.toml | head -1)
+          elif [ -f "setup.cfg" ]; then
+            PKG_VERSION=$(grep -Po '(?<=^version = ).*' setup.cfg | head -1)
+          else
+            echo "⚠️  No pyproject.toml or setup.cfg found — skipping version check"
+            exit 0
+          fi
+
+          TAG_VERSION="${GITHUB_REF_NAME#v}"  # Strip leading 'v' from tag
+
+          echo "📦 Package version : $PKG_VERSION"
+          echo "🏷️  Git tag version  : $TAG_VERSION"
+
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ Version mismatch! Tag v$TAG_VERSION does not match package version $PKG_VERSION"
+            echo "   Update your version in pyproject.toml before releasing."
+            exit 1
+          fi
+          echo "✅ Versions match — proceeding with publish"
+
+  # ============================================================
+  # JOB 2: Run tests
+  # ============================================================
+  test:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run-tests != false }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+
+    steps:
+      - name: 🔄 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.11' }}
+
+      - name: 💾 Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: test-pip-${{ runner.os }}-${{ inputs.python-version || '3.11' }}-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
+          restore-keys: |
+            test-pip-${{ runner.os }}-${{ inputs.python-version || '3.11' }}-
+
+      - name: 📦 Install package + test dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ".[dev,test]" 2>/dev/null || pip install ".[test]" 2>/dev/null || pip install -e "."
+          # Install pytest if not already pulled in
+          pip install pytest 2>/dev/null || true
+
+      - name: 🧪 Run tests
+        run: ${{ inputs.test-command || 'pytest' }}
+
+  # ============================================================
+  # JOB 3: Build the distribution
+  # ============================================================
+  build:
+    name: 🏗️ Build Package
+    needs: [validate-version, test]
+    # Allow build to run even if test job was skipped
+    if: |
+      always() &&
+      needs.validate-version.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+
+    steps:
+      - name: 🔄 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.11' }}
+
+      - name: 📦 Install build tools
+        run: |
+          pip install --upgrade pip build twine
+
+      - name: 🧱 Build sdist and wheel
+        run: python -m build
+
+      - name: 🧪 Validate package metadata
+        run: twine check dist/*
+
+      - name: 🗃️ Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ inputs.working-directory || '.' }}/dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ============================================================
+  # JOB 4A: Publish via OIDC Trusted Publishing (recommended)
+  # ============================================================
+  publish-trusted:
+    name: 🚀 Publish (Trusted Publishing)
+    needs: build
+    if: ${{ inputs.use-trusted-publishing != false }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/${{ github.event.repository.name }}
+    permissions:
+      id-token: write  # Required for OIDC
+
+    steps:
+      - name: 🗃️ Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: dist/
+
+      - name: 📤 Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ inputs.repository-url || 'https://upload.pypi.org/legacy/' }}
+
+  # ============================================================
+  # JOB 4B: Publish via API token (fallback)
+  # ============================================================
+  publish-token:
+    name: 🚀 Publish (API Token)
+    needs: build
+    if: ${{ inputs.use-trusted-publishing == false }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/${{ github.event.repository.name }}
+
+    steps:
+      - name: 🗃️ Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: dist/
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.11' }}
+
+      - name: 📦 Install twine
+        run: pip install --upgrade twine
+
+      - name: 📤 Upload to PyPI via token
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          TWINE_REPOSITORY_URL: ${{ inputs.repository-url || 'https://upload.pypi.org/legacy/' }}
+        run: twine upload dist/*
