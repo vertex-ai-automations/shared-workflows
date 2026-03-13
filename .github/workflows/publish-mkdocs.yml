@@ -123,7 +123,10 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
-
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     steps:
       - name: 🚀 Deploy to GitHub Pages
         id: deploy
