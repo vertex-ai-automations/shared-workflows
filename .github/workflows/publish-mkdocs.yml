@@ -94,7 +94,7 @@ jobs:
       - name: 📦 Install doc dependencies
         run: |
           pip install --upgrade pip
-          pip install mkdocs-material mkdocstrings-python mkdocs-git-revision-date-localized-plugin mkdocs-git-authors-plugin
+          pip install mkdocs-material mkdocstrings-python mkdocs-git-revision-date-localized-plugin mkdocs-git-authors-plugin ruff
 
       - name: 🔧 Configure PYTHONPATH for src layout
         if: ${{ inputs.src-layout == true }}
