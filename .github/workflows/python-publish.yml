@@ -5,28 +5,59 @@
 #
 #   on:
 #     push:
-#       tags: ["v*.*.*"]
+#       tags: ["*.*.*"]       # bare SemVer e.g. 1.2.1
 #
 #   jobs:
-#     publish:
-#       uses: your-org/shared-workflows/.github/workflows/python-publish.yml@main
+#
+#     # 🧪 Publish to TestPyPI on every merge to main
+#     test-publish:
+#       if: github.ref == 'refs/heads/main'
+#       uses: vertex-ai-automations/shared-workflows/.github/workflows/python-publish.yml@main
+#       permissions:
+#         contents: read
+#         id-token: write
 #       with:
 #         python-version: '3.11'
 #         run-tests: true
 #         test-command: 'pytest tests/ -v'
+#         use-trusted-publishing: false
+#         repository-url: 'https://test.pypi.org/legacy/'
+#       secrets:
+#         PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+#
+#     # 🚀 Publish to PyPI on SemVer tag e.g. 1.2.1
+#     publish:
+#       if: startsWith(github.ref, 'refs/tags/') && !startsWith(github.ref, 'refs/tags/v')
+#       uses: vertex-ai-automations/shared-workflows/.github/workflows/python-publish.yml@main
+#       permissions:
+#         contents: read
+#         id-token: write
+#       with:
+#         python-version: '3.11'
+#         run-tests: true
+#         test-command: 'pytest tests/ -v'
+#         use-trusted-publishing: true
 #       secrets: inherit
 #
 # NOTE: The build artifact name is automatically derived from the calling
 #       repository name (e.g. "custom-logger-dist"). No manual configuration needed.
 #
-# SETUP (Trusted Publishing — recommended):
-#   1. Go to pypi.org → your project → Publishing → Add a publisher
-#   2. Set: owner=your-org, repo=your-repo, workflow=release.yml
-#   3. Use the OIDC job below (no secret needed)
+# SECRETS:
+#   PYPI_API_TOKEN      — real PyPI token (pypi.org)
+#   TEST_PYPI_API_TOKEN — TestPyPI token (test.pypi.org)
 #
-# SETUP (Token fallback):
-#   1. Generate an API token at pypi.org/manage/account/token/
-#   2. Add it as repo secret: PYPI_API_TOKEN
+#   Both secrets live in your PROJECT repo, not here.
+#   In your caller workflow, map the right secret:
+#     For TestPyPI: secrets: { PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }} }
+#     For PyPI:     secrets: inherit  (uses PYPI_API_TOKEN directly)
+#
+# SETUP (Trusted Publishing — recommended for PyPI):
+#   1. Go to pypi.org → your project → Publishing → Add a publisher
+#   2. Set: owner=vertex-ai-automations, repo=your-repo, workflow=release.yml, env=pypi
+#
+# SETUP (Token fallback — required for TestPyPI unless separately configured):
+#   1. Generate tokens at pypi.org and test.pypi.org independently
+#   2. Store in project repo secrets as PYPI_API_TOKEN and TEST_PYPI_API_TOKEN
 # ==============================================================================
 
 name: 📦 Build and Publish Python Package to PyPI
@@ -47,11 +78,18 @@ on:
         type: string
         default: "pytest"
       use-trusted-publishing:
-        description: "Use OIDC Trusted Publishing (recommended). Set false to use PYPI_API_TOKEN secret."
+        description: >
+          Use OIDC Trusted Publishing (recommended for PyPI).
+          Set false to use the PYPI_API_TOKEN secret instead.
+          Always set false when targeting TestPyPI unless you have a
+          separate Trusted Publisher registered there.
         type: boolean
         default: true
       repository-url:
-        description: "PyPI repository URL. Override to use TestPyPI: https://test.pypi.org/legacy/"
+        description: >
+          Target registry URL.
+          PyPI (default): https://upload.pypi.org/legacy/
+          TestPyPI:       https://test.pypi.org/legacy/
         type: string
         default: "https://upload.pypi.org/legacy/"
       working-directory:
@@ -60,26 +98,36 @@ on:
         default: "."
     secrets:
       PYPI_API_TOKEN:
-        description: "PyPI API token (only required if use-trusted-publishing is false)"
+        description: >
+          API token for the target registry.
+          For PyPI:     pass ${{ secrets.PYPI_API_TOKEN }}
+          For TestPyPI: pass ${{ secrets.TEST_PYPI_API_TOKEN }}
+          Map the correct secret in your caller workflow.
+          Only required when use-trusted-publishing is false.
         required: false
 
-  # Allow manual triggering (useful for TestPyPI releases)
+  # Allow manual triggering — useful for ad-hoc TestPyPI releases
   workflow_dispatch:
     inputs:
-      repository-url:
-        description: "Target PyPI URL"
+      python-version:
+        description: "Python version"
         type: string
+        default: "3.11"
+      use-trusted-publishing:
+        description: "Use OIDC Trusted Publishing (false = use token)"
+        type: boolean
+        default: true
+      repository-url:
+        description: "Target registry URL"
+        type: choice
+        options:
+          - "https://upload.pypi.org/legacy/"
+          - "https://test.pypi.org/legacy/"
         default: "https://upload.pypi.org/legacy/"
 
-# Minimal permissions — publish job adds id-token conditionally
+# Minimal permissions — publish jobs declare id-token conditionally
 permissions:
   contents: read
-
-# Derive a unique artifact name from the calling repo automatically.
-# e.g. repo "custom-logger" → artifact "custom-logger-dist"
-# This ensures no collisions between projects without any manual configuration.
-env:
-  ARTIFACT_NAME: ${{ github.event.repository.name }}-dist
 
 jobs:
   # ============================================================
@@ -114,14 +162,15 @@ jobs:
             exit 0
           fi
 
-          TAG_VERSION="${GITHUB_REF_NAME#v}"  # Strip leading 'v' from tag
+          # Strip leading 'v' if present — supports both 1.2.1 and v1.2.1 tag formats
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
 
           echo "📦 Package version : $PKG_VERSION"
           echo "🏷️  Git tag version  : $TAG_VERSION"
 
           if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "❌ Version mismatch! Tag v$TAG_VERSION does not match package version $PKG_VERSION"
-            echo "   Update your version in pyproject.toml before releasing."
+            echo "❌ Version mismatch! Tag '$TAG_VERSION' does not match package version '$PKG_VERSION'"
+            echo "   Update the version in pyproject.toml before releasing."
             exit 1
           fi
           echo "✅ Versions match — proceeding with publish"
@@ -158,7 +207,6 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install ".[dev,test]" 2>/dev/null || pip install ".[test]" 2>/dev/null || pip install -e "."
-          # Install pytest if not already pulled in
           pip install pytest 2>/dev/null || true
 
       - name: 🧪 Run tests
@@ -170,7 +218,7 @@ jobs:
   build:
     name: 🏗️ Build Package
     needs: [validate-version, test]
-    # Allow build to run even if test job was skipped
+    # Run even if test was skipped (run-tests: false), but not if it failed
     if: |
       always() &&
       needs.validate-version.result == 'success' &&
@@ -179,6 +227,11 @@ jobs:
     defaults:
       run:
         working-directory: ${{ inputs.working-directory || '.' }}
+    # Expose artifact name as a job output — downstream jobs reference this
+    # instead of the workflow-level env var to avoid resolution issues on
+    # workflow_dispatch where github.event.repository may differ
+    outputs:
+      artifact-name: ${{ steps.set-artifact-name.outputs.name }}
 
     steps:
       - name: 🔄 Checkout
@@ -189,9 +242,14 @@ jobs:
         with:
           python-version: ${{ inputs.python-version || '3.11' }}
 
+      - name: 🏷️ Set artifact name
+        id: set-artifact-name
+        # Derives from repo name — guarantees uniqueness across all projects
+        # e.g. repo "custom-logger" → artifact "custom-logger-dist"
+        run: echo "name=${{ github.event.repository.name }}-dist" >> $GITHUB_OUTPUT
+
       - name: 📦 Install build tools
-        run: |
-          pip install --upgrade pip build twine
+        run: pip install --upgrade pip build twine
 
       - name: 🧱 Build sdist and wheel
         run: python -m build
@@ -202,13 +260,14 @@ jobs:
       - name: 🗃️ Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
+          name: ${{ steps.set-artifact-name.outputs.name }}
           path: ${{ inputs.working-directory || '.' }}/dist/
           retention-days: 7
           if-no-files-found: error
 
   # ============================================================
   # JOB 4A: Publish via OIDC Trusted Publishing (recommended)
+  # Use for: PyPI production releases
   # ============================================================
   publish-trusted:
     name: 🚀 Publish (Trusted Publishing)
@@ -219,13 +278,13 @@ jobs:
       name: pypi
       url: https://pypi.org/p/${{ github.event.repository.name }}
     permissions:
-      id-token: write  # Required for OIDC
+      id-token: write  # Required for OIDC token exchange
 
     steps:
       - name: 🗃️ Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
+          name: ${{ needs.build.outputs.artifact-name }}
           path: dist/
 
       - name: 📤 Publish to PyPI (Trusted Publishing)
@@ -234,7 +293,22 @@ jobs:
           repository-url: ${{ inputs.repository-url || 'https://upload.pypi.org/legacy/' }}
 
   # ============================================================
-  # JOB 4B: Publish via API token (fallback)
+  # JOB 4B: Publish via API token
+  # Use for: TestPyPI (always), or PyPI if Trusted Publishing is not set up
+  #
+  # TOKEN ROUTING — handled entirely in the caller workflow:
+  #
+  #   Publishing to TestPyPI:
+  #     secrets:
+  #       PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+  #
+  #   Publishing to PyPI with token:
+  #     secrets:
+  #       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+  #     (or use: secrets: inherit)
+  #
+  # The reusable workflow always reads secrets.PYPI_API_TOKEN — the caller
+  # is responsible for mapping the right secret to that name.
   # ============================================================
   publish-token:
     name: 🚀 Publish (API Token)
@@ -243,13 +317,13 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/${{ github.event.repository.name }}
+      url: ${{ inputs.repository-url == 'https://test.pypi.org/legacy/' && 'https://test.pypi.org' || format('https://pypi.org/p/{0}', github.event.repository.name) }}
 
     steps:
       - name: 🗃️ Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
+          name: ${{ needs.build.outputs.artifact-name }}
           path: dist/
 
       - name: 🐍 Set up Python
@@ -260,7 +334,19 @@ jobs:
       - name: 📦 Install twine
         run: pip install --upgrade twine
 
-      - name: 📤 Upload to PyPI via token
+      - name: 🔐 Confirm target registry
+        run: |
+          TARGET="${{ inputs.repository-url || 'https://upload.pypi.org/legacy/' }}"
+          echo "📡 Publishing to: $TARGET"
+          if [[ "$TARGET" == *"test.pypi"* ]]; then
+            echo "🧪 Target: TestPyPI"
+            echo "   Ensure TEST_PYPI_API_TOKEN was mapped to PYPI_API_TOKEN in your caller workflow."
+          else
+            echo "🚀 Target: PyPI"
+            echo "   Ensure PYPI_API_TOKEN is set in your project repo secrets."
+          fi
+
+      - name: 📤 Upload to registry via token
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
