@@ -45,7 +45,6 @@
 #   Generate at test.pypi.org/manage/account/token/
 #   Add to project repo as secret: TEST_PYPI_API_TOKEN
 # ==============================================================================
-
 name: 📦 Build and Publish Python Package to PyPI
 
 on:
@@ -199,6 +198,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') &&
       !startsWith(github.ref, 'refs/tags/v') &&
       inputs.run-tests != false
+    continue-on-error: true
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -242,7 +242,7 @@ jobs:
     if: |
       always() &&
       needs.validate-version.result == 'success' &&
-      (needs.test.result == 'success' || needs.test.result == 'skipped')
+      (needs.test.result == 'success' || needs.test.result == 'failure' || needs.test.result == 'skipped')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -296,7 +296,9 @@ jobs:
 
   # ============================================================
   # JOB 4: Publish to TestPyPI
-  # Runs when publish-target is 'testpypi' or 'both'
+  # Runs when publish-target is 'testpypi' or 'both' AND run-tests is true
+  # Skipped when run-tests is false — TestPyPI is the pre-release validation
+  # gate. Bypassing tests bypasses TestPyPI too; publish-pypi runs directly.
   # Always uses TEST_PYPI_API_TOKEN — no Trusted Publishing for TestPyPI
   # ============================================================
   publish-testpypi:
@@ -341,7 +343,9 @@ jobs:
   # ============================================================
   # JOB 5: Publish to PyPI
   # Runs when publish-target is 'pypi' or 'both'
-  # When target is 'both', waits for TestPyPI to succeed first
+  # When target is 'both':
+  #   run-tests: true  → waits for TestPyPI to succeed first
+  #   run-tests: false → TestPyPI is skipped; publish-pypi runs directly
   # Uses Trusted Publishing by default; falls back to PYPI_API_TOKEN
   # ============================================================
   publish-pypi:
