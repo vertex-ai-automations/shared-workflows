@@ -113,7 +113,7 @@ jobs:
       - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ inputs.working-directory || '.' }}/site
+          path: ${{ inputs.working-directory || '.' }}/public
 
   deploy-docs:
     name: 🚀 Deploy to GitHub Pages
