@@ -81,6 +81,12 @@ on:
         description: "Working directory (monorepo support)"
         type: string
         default: "."
+      fail-on-test-failure:
+        description: >
+          Set true to block publishing when tests fail.
+          Default false — tests are advisory (continue-on-error).
+        type: boolean
+        default: false
     secrets:
       PYPI_API_TOKEN:
         description: "pypi.org API token — only required if use-trusted-publishing is false"
@@ -114,7 +120,6 @@ on:
 # id-token: write — OIDC Trusted Publishing (scoped to publish-pypi job only)
 permissions:
   contents: read
-  id-token: write
 
 # TAG GUARD — enforced on every job below.
 # setuptools_scm derives the version from the git tag. A non-tag commit
@@ -122,6 +127,26 @@ permissions:
 # Callers never need to add tag conditions — non-tag pushes skip cleanly.
 
 jobs:
+
+  # ============================================================
+  # JOB 0: Reject v-prefixed tags with a clear error
+  # All other jobs silently skip non-bare-SemVer tags.
+  # This job surfaces a helpful message instead of a silent no-op.
+  # ============================================================
+  reject-v-prefix-tag:
+    name: ❌ Reject v-prefixed tag
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail with guidance
+        run: |
+          echo "❌ Tag '$GITHUB_REF_NAME' uses a 'v' prefix."
+          echo "   This workflow requires bare SemVer tags (e.g. 1.2.3, not v1.2.3)."
+          echo "   Fix:"
+          echo "   git tag -d $GITHUB_REF_NAME"
+          echo "   git push origin :refs/tags/$GITHUB_REF_NAME"
+          echo "   git tag ${GITHUB_REF_NAME#v} && git push origin ${GITHUB_REF_NAME#v}"
+          exit 1
 
   # ============================================================
   # JOB 1: Validate the release tag (setuptools_scm aware)
@@ -198,7 +223,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') &&
       !startsWith(github.ref, 'refs/tags/v') &&
       inputs.run-tests != false
-    continue-on-error: true
+    continue-on-error: ${{ inputs.fail-on-test-failure != true && inputs.fail-on-test-failure != 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -306,6 +331,7 @@ jobs:
     if: |
       startsWith(github.ref, 'refs/tags/') &&
       !startsWith(github.ref, 'refs/tags/v') &&
+      inputs.run-tests != false &&
       (inputs.publish-target == 'testpypi' || inputs.publish-target == 'both')
     runs-on: ubuntu-latest
     environment:
@@ -379,24 +405,24 @@ jobs:
 
       # --- Path A: Trusted Publishing (default) ---
       - name: 📤 Publish to PyPI (Trusted Publishing)
-        if: inputs.use-trusted-publishing != false
-        uses: pypa/gh-action-pypi-publish@release/v1
+        if: inputs.use-trusted-publishing != false && inputs.use-trusted-publishing != 'false'
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           repository-url: https://upload.pypi.org/legacy/
 
       # --- Path B: API token fallback ---
       - name: 🐍 Set up Python (token path)
-        if: inputs.use-trusted-publishing == false
+        if: inputs.use-trusted-publishing == false || inputs.use-trusted-publishing == 'false'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version || '3.11' }}
 
       - name: 📦 Install twine (token path)
-        if: inputs.use-trusted-publishing == false
+        if: inputs.use-trusted-publishing == false || inputs.use-trusted-publishing == 'false'
         run: pip install --upgrade twine
 
       - name: 📤 Publish to PyPI (API Token)
-        if: inputs.use-trusted-publishing == false
+        if: inputs.use-trusted-publishing == false || inputs.use-trusted-publishing == 'false'
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}

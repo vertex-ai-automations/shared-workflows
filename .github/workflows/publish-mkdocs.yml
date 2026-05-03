@@ -43,6 +43,10 @@ on:
         description: "Working directory (monorepo support)"
         type: string
         default: "."
+      default-branch:
+        description: "Default branch name that triggers doc builds on push"
+        type: string
+        default: "main"
 
   # Allow direct triggering for testing
   workflow_dispatch:
@@ -56,7 +60,6 @@ on:
 permissions:
   contents: read
   pages: write
-  id-token: write
 
 # Prevent concurrent deployments — queue them instead of cancelling
 concurrency:
@@ -66,7 +69,7 @@ concurrency:
 jobs:
   build-docs:
     name: 🔨 Build Docs
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref == format('refs/heads/{0}', inputs.default-branch || 'main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -95,7 +98,14 @@ jobs:
       - name: 📦 Install doc dependencies
         run: |
           pip install --upgrade pip
-          pip install mkdocs-material mkdocstrings-python mkdocs-git-revision-date-localized-plugin mkdocs-git-authors-plugin ruff
+          REQ_FILE="${{ inputs.docs-requirements || 'docs/requirements.txt' }}"
+          if [ -f "$REQ_FILE" ]; then
+            echo "Installing from $REQ_FILE"
+            pip install -r "$REQ_FILE"
+          else
+            echo "⚠️  $REQ_FILE not found — installing default packages"
+            pip install mkdocs-material mkdocstrings-python mkdocs-git-revision-date-localized-plugin mkdocs-git-authors-plugin
+          fi
 
       - name: 🔧 Configure PYTHONPATH for src layout
         if: ${{ inputs.src-layout == true }}
@@ -114,12 +124,15 @@ jobs:
       - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ inputs.working-directory || '.' }}/public
+          path: ${{ inputs.working-directory || '.' }}/site
 
   deploy-docs:
     name: 🚀 Deploy to GitHub Pages
     needs: build-docs
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      pages: write
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}

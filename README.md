@@ -55,6 +55,7 @@ vertex-ai-automations/shared-workflows/     ← This repo
 ├── .github/
 │   └── workflows/                          ← All reusable workflow templates live here
 │       ├── publish-mkdocs.yml              ← MkDocs → GitHub Pages deployment
+│       ├── publish-zensical.yml            ← Zensical → GitHub Pages deployment
 │       └── python-publish.yml             ← Python package → PyPI/TestPyPI publishing
 │
 ├── docs/
@@ -96,6 +97,32 @@ Builds a [MkDocs](https://www.mkdocs.org/) documentation site and deploys it to 
 | `permissions: pages: write` (not `contents: write`) | Least-privilege — the workflow token cannot push commits or modify branches |
 | `concurrency: cancel-in-progress: false` | Prevents a fast push from cancelling an in-flight deploy; queues instead |
 | Falls back gracefully if no requirements file found | Won't hard-fail new projects that haven't set up `docs/requirements.txt` yet |
+
+---
+
+### 🔷 Deploy Zensical Docs to GitHub Pages
+
+**File:** `.github/workflows/publish-zensical.yml`
+
+Builds a [Zensical](https://zensical.dev/) documentation site and deploys it to GitHub Pages. Zensical is an MkDocs-based documentation framework and requires Python 3.10+.
+
+**What it does:**
+
+1. Checks out the repository with full git history
+2. Installs Python and caches pip dependencies
+3. Installs doc dependencies from the requirements file specified by `docs-requirements`
+4. Optionally adds `src/` to `PYTHONPATH` for projects using src layout
+5. Runs `zensical build` (outputs to `public/` by default)
+6. Uploads the built site as a Pages artifact
+7. Deploys to GitHub Pages via `actions/deploy-pages`
+
+**Key design decisions:**
+
+| Decision | Reason |
+|---|---|
+| Uses `docs-requirements` input | Lets callers pin exact versions for reproducible builds |
+| `id-token: write` scoped to `deploy-docs` job only | Least-privilege — the build job installs third-party packages and should not have OIDC token minting capability |
+| Requires Python 3.10+ | Zensical framework constraint |
 
 ---
 
@@ -396,10 +423,32 @@ black==24.4.0
 | Input | Type | Default | Description |
 |---|---|---|---|
 | `python-version` | `string` | `"3.11"` | Python version for building docs |
-| `docs-requirements` | `string` | `"docs/requirements.txt"` | Path to pip requirements file |
+| `docs-requirements` | `string` | `"docs/requirements.txt"` | Path to pip requirements file. If the file exists it is installed; otherwise defaults are used. |
 | `src-layout` | `boolean` | `false` | Add `src/` to `PYTHONPATH` |
 | `mkdocs-strict` | `boolean` | `true` | Fail on MkDocs warnings |
 | `working-directory` | `string` | `"."` | Root directory (for monorepos) |
+| `default-branch` | `string` | `"main"` | Branch name that triggers doc builds on push. Set to `master` or your repo's default branch if not `main`. |
+
+**Required caller permissions:**
+
+```yaml
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+```
+
+---
+
+### `publish-zensical.yml`
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `python-version` | `string` | `"3.11"` | Python version (must be 3.10+) |
+| `docs-requirements` | `string` | `"requirements-docs.txt"` | Path to pip requirements file |
+| `src-layout` | `boolean` | `false` | Add `src/` to `PYTHONPATH` |
+| `working-directory` | `string` | `"."` | Root directory (for monorepos) |
+| `default-branch` | `string` | `"main"` | Branch name that triggers doc builds on push |
 
 **Required caller permissions:**
 
@@ -417,8 +466,9 @@ permissions:
 | Input | Type | Default | Description |
 |---|---|---|---|
 | `python-version` | `string` | `"3.11"` | Python version for build and test |
-| `run-tests` | `boolean` | `true` | Run tests before publishing. Failures are non-blocking (`continue-on-error`). Set `false` to skip tests and TestPyPI entirely. |
+| `run-tests` | `boolean` | `true` | Run tests before publishing. Set `false` to skip tests and TestPyPI entirely. |
 | `test-command` | `string` | `"pytest"` | Test command to execute |
+| `fail-on-test-failure` | `boolean` | `false` | Set `true` to block publishing when tests fail. Default `false` — tests are advisory. |
 | `publish-target` | `string` | `"both"` | `"both"` → testpypi then pypi · `"pypi"` → pypi only · `"testpypi"` → testpypi only |
 | `use-trusted-publishing` | `boolean` | `true` | Use OIDC Trusted Publishing for PyPI. Set `false` to use `PYPI_API_TOKEN` instead. TestPyPI always uses `TEST_PYPI_API_TOKEN` regardless. |
 | `working-directory` | `string` | `"."` | Root directory (for monorepos) |
