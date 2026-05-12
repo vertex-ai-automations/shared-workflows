@@ -40,7 +40,8 @@ validate-version ──┐
 test ──────────────┘
 ```
 
-- All jobs are **tag-gated** internally — callers never need `if: startsWith(github.ref, 'refs/tags/')`.
+- Docs deployment is triggered via `workflow_run: workflows: ["CI"]` so it only fires after CI passes on `main`. The docs job carries an `if: conclusion == 'success'` condition. Tag-triggered publish is unaffected.
+- All publish jobs are **tag-gated** internally — callers never need `if: startsWith(github.ref, 'refs/tags/')`.
 - Tags must be **bare SemVer** (`X.Y.Z`) — no `v` prefix, no pre-release suffixes. A `reject-v-prefix-tag` job surfaces a helpful error for `v`-prefixed tags; other non-matching tags skip silently.
 - **`setuptools_scm`** derives version from the git tag at build time. All checkout steps use `fetch-depth: 0` + `fetch-tags: true` — a shallow clone always produces `0.1.dev0`.
 - `publish-testpypi` is skipped when `run-tests: false` (TestPyPI is the pre-release gate; bypassing tests bypasses TestPyPI).

@@ -309,16 +309,21 @@ name: 🚢 Release
 
 on:
   push:
-    branches: [main]    # docs deploy only
-    tags: ["*.*.*"]     # publish only — bare SemVer e.g. 1.2.1
-  workflow_dispatch:    # manual trigger — docs only
+    tags: ["*.*.*"]       # publish only — bare SemVer e.g. 1.2.1
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]      # docs deploy — triggered after CI passes on main
+  workflow_dispatch:      # manual trigger — docs only
 
 jobs:
 
-  # 📚 Deploy docs on push to main and manual trigger
+  # 📚 Deploy docs after CI passes on main (or manually)
   docs:
     name: 📚 Deploy Docs
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch'
     uses: vertex-ai-automations/shared-workflows/.github/workflows/publish-mkdocs.yml@main
     permissions:
       contents: read
@@ -332,7 +337,7 @@ jobs:
     secrets: inherit
 
   # 📦 Build and publish — tag-gated inside the reusable workflow
-  # Non-tag pushes skip all publish jobs cleanly — no if: needed here
+  # Non-tag events skip all publish jobs cleanly — no if: needed here
   publish:
     name: 📦 Publish Package
     uses: vertex-ai-automations/shared-workflows/.github/workflows/python-publish.yml@main
@@ -349,9 +354,13 @@ jobs:
 
 | Event | `docs` | `publish` |
 |---|---|---|
-| Push to `main` | ✅ runs | ⛔ all publish jobs skip (no tag) |
+| CI passes on `main` | ✅ runs | ⛔ skipped (no tag) |
+| CI fails on `main` | ⛔ skipped (`conclusion != 'success'`) | ⛔ skipped (no tag) |
 | Push tag `1.2.1` | ⛔ skipped | ✅ testpypi → pypi |
-| Manual dispatch | ✅ runs | ⛔ all publish jobs skip (no tag) |
+| Manual dispatch | ✅ runs | ⛔ skipped (no tag) |
+
+> **Why `workflow_run` instead of `push: branches: [main]`?**
+> Using `push: branches: [main]` fires the docs job in parallel with CI — docs can deploy from a broken commit. `workflow_run` chains the two workflows so docs only deploys once CI has passed. The `if: conclusion == 'success'` condition on the docs job blocks deployment on CI failure.
 
 **To release a new version:**
 
