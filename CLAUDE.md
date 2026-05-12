@@ -18,7 +18,7 @@ All workflow files live in `.github/workflows/`. Each is a `workflow_call` reusa
 uses: vertex-ai-automations/shared-workflows/.github/workflows/<file>.yml@<ref>
 ```
 
-**Six workflows:**
+**Eight workflows:**
 
 | File | Purpose |
 |---|---|
@@ -28,6 +28,8 @@ uses: vertex-ai-automations/shared-workflows/.github/workflows/<file>.yml@<ref>
 | `test.yml` | Cross-platform, multi-Python test matrix; `os-matrix` and `python-versions` are JSON-string inputs |
 | `lint.yml` | Ruff lint (`ruff check`) + format check (`ruff format --check`) |
 | `typecheck.yml` | Static type checking; defaults to `mypy src/`, accepts any checker via `typecheck-command` |
+| `audit.yml` | Dependency security audit via `pip-audit`; fails on any known CVE |
+| `coverage.yml` | pytest with `--cov`, posts a coverage table to the Actions job summary; optional threshold gate |
 
 ## Key Design Invariants
 

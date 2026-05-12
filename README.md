@@ -2,7 +2,7 @@
 
 > Centralized, reusable CI/CD workflow templates for all projects in the **vertex-ai-automations** GitHub Organization.
 
-[![Workflows](https://img.shields.io/badge/workflows-6-blue?logo=github-actions)](/.github/workflows)
+[![Workflows](https://img.shields.io/badge/workflows-8-blue?logo=github-actions)](/.github/workflows)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-reusable-orange?logo=github)](https://docs.github.com/en/actions/using-workflows/reusing-workflows)
 
@@ -19,6 +19,8 @@
   - [Cross-platform Test Matrix](#-cross-platform-test-matrix)
   - [Lint with Ruff](#-lint-with-ruff)
   - [Static Type Check](#-static-type-check)
+  - [Security Audit](#-security-audit)
+  - [Test Coverage Report](#-test-coverage-report)
 - [Release Quick Start](#-release-quick-start)
 - [CI Quick Start](#-ci-quick-start)
 - [Publish Target Flag](#-publish-target-flag)
@@ -64,7 +66,9 @@ vertex-ai-automations/shared-workflows/     ← This repo
 │       ├── python-publish.yml              ← Python package → PyPI/TestPyPI publishing
 │       ├── test.yml                        ← Cross-platform, multi-Python test matrix
 │       ├── lint.yml                        ← Ruff lint + format check
-│       └── typecheck.yml                   ← Static type checking (mypy / pyright)
+│       ├── typecheck.yml                   ← Static type checking (mypy / pyright)
+│       ├── audit.yml                       ← Dependency security audit (pip-audit)
+│       └── coverage.yml                    ← Test coverage report → Actions job summary
 │
 ├── docs/
 │   └── adr/                                ← Architecture Decision Records
@@ -247,6 +251,55 @@ Runs a static type checker against your codebase. Defaults to [mypy](https://myp
 
 ---
 
+### 🔒 Security Audit
+
+**File:** `.github/workflows/audit.yml`
+
+Scans all installed packages (including transitive dependencies) for known vulnerabilities using [`pip-audit`](https://github.com/pypa/pip-audit). The job fails on any unfixed CVE.
+
+**What it does:**
+
+1. Installs the project via `install-command` to populate the full dependency set
+2. Installs `pip-audit` in the same environment
+3. Runs `pip-audit` — scans every installed package against the OSV and PyPI Advisory databases
+4. Fails the job if any vulnerability is found
+
+**Recommended triggers:** every pull request + a weekly scheduled scan (catches new CVEs disclosed after merge).
+
+**Key design decisions:**
+
+| Decision | Reason |
+|---|---|
+| Installs the project before auditing | Scanning the full installed environment catches transitive dep vulnerabilities — auditing a `requirements.txt` alone can miss them |
+| `pip-audit` installed separately (not part of `install-command`) | Keeps the audit tool out of the project's own dependency tree |
+| `pip-audit-args` input | Provides an escape hatch for suppressing accepted advisories (`--ignore-vuln GHSA-xxxx-yyyy-zzzz`) without modifying the workflow |
+
+---
+
+### 📊 Test Coverage Report
+
+**File:** `.github/workflows/coverage.yml`
+
+Runs your test suite with `pytest-cov` and posts a per-file coverage table to the GitHub Actions job summary. No third-party service (Codecov, Coveralls) required.
+
+**What it does:**
+
+1. Installs the project via `install-command`, then installs `pytest-cov`
+2. Runs `test-command` with `--cov`, `--cov-report=term-missing`, and `--cov-report=json`
+3. Parses `coverage.json` and writes a markdown coverage table to `$GITHUB_STEP_SUMMARY`
+4. Optionally fails the job if total coverage is below `coverage-threshold`
+
+**Key design decisions:**
+
+| Decision | Reason |
+|---|---|
+| `pytest-cov` installed automatically | Callers don't need to add it to their extras — the workflow always ensures it is present |
+| `--cov-report=json` drives both the summary and the threshold check | A single machine-readable output feeds both steps, avoiding a second pytest run |
+| Summary step runs with `if: always()` | Coverage table is posted even when tests fail — useful for diagnosing which files lack coverage |
+| `coverage-threshold: 0` disables the gate by default | Opt-in enforcement — projects set their own bar without the workflow imposing a default |
+
+---
+
 ## 🚀 Release Quick Start
 
 Create `.github/workflows/release.yml` in your project repo:
@@ -353,6 +406,22 @@ jobs:
     with:
       install-command: 'pip install -e ".[dev]"'
       typecheck-command: 'mypy src/ --strict'
+
+  # 🔒 Dependency security audit
+  audit:
+    name: 🔒 Audit
+    uses: vertex-ai-automations/shared-workflows/.github/workflows/audit.yml@main
+    with:
+      install-command: 'pip install -e ".[test]"'
+
+  # 📊 Coverage report — posted to the Actions job summary
+  coverage:
+    name: 📊 Coverage
+    uses: vertex-ai-automations/shared-workflows/.github/workflows/coverage.yml@main
+    with:
+      install-command: 'pip install -e ".[test]"'
+      coverage-source: 'src/'
+      coverage-threshold: 80
 ```
 
 **Narrowing the matrix per project:**
@@ -375,6 +444,27 @@ test:
   with:
     install-command: 'pip install -e ".[tui,fastapi]" && pip install -r tests/requirements.txt'
     test-command: 'pytest tests/ -v --tb=short'
+```
+
+**Weekly scheduled security scan (audit.yml):**
+
+```yaml
+# .github/workflows/audit.yml  (in your project repo)
+name: 🔒 Security Audit
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 9 * * 1'   # every Monday at 09:00 UTC
+
+jobs:
+  audit:
+    uses: vertex-ai-automations/shared-workflows/.github/workflows/audit.yml@main
+    with:
+      install-command: 'pip install -e ".[test]"'
+      # suppress an advisory while waiting for upstream fix:
+      # pip-audit-args: '--ignore-vuln GHSA-xxxx-yyyy-zzzz'
 ```
 
 **Pinning Ruff to a specific version:**
@@ -696,6 +786,34 @@ Pass both via `secrets: inherit` — the workflow reads them by name.
 
 ---
 
+### `audit.yml`
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `python-version` | `string` | `"3.11"` | Python version for the runner. |
+| `install-command` | `string` | `'pip install -e "."'` | Installs the project so all transitive deps are present for scanning. |
+| `pip-audit-args` | `string` | `""` | Extra flags passed to `pip-audit` (e.g. `--ignore-vuln GHSA-xxxx-yyyy-zzzz`). |
+| `working-directory` | `string` | `"."` | Root directory (for monorepos). |
+
+> **No `permissions:` block needed on the caller job** — `contents: read` is declared inside `audit.yml`.
+
+---
+
+### `coverage.yml`
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `python-version` | `string` | `"3.11"` | Python version for the runner. |
+| `install-command` | `string` | `'pip install -e ".[test]"'` | Installs the project and test dependencies. `pytest-cov` is installed automatically on top. |
+| `test-command` | `string` | `"pytest"` | Base pytest command. `--cov`, `--cov-report=term-missing`, and `--cov-report=json` are appended automatically. |
+| `coverage-source` | `string` | `"src/"` | Path passed to `--cov` (e.g. `src/mypackage`). |
+| `coverage-threshold` | `number` | `0` | Minimum total coverage %. Job fails if below this. Set `0` to disable. |
+| `working-directory` | `string` | `"."` | Root directory (for monorepos). |
+
+> **No `permissions:` block needed on the caller job** — `contents: read` is declared inside `coverage.yml`.
+
+---
+
 ## 🔁 Migration Guide
 
 If your project has existing inline workflow files, follow these steps.
@@ -859,6 +977,42 @@ The `lint.yml` workflow installs Ruff before running — this error should not o
 
 The type checker is not included in the extras installed by `install-command`.
 → Ensure the type checker is declared as a dependency in the extras group you're installing. For example, add `mypy` to `[project.optional-dependencies] dev` in `pyproject.toml`.
+
+---
+
+### ❌ `pip-audit` fails with a known/accepted vulnerability
+
+A CVE is present in a dependency but has been reviewed and accepted (e.g. it affects an unused code path, or a fix isn't available yet).
+→ Pass the advisory ID to `pip-audit-args`:
+```yaml
+pip-audit-args: '--ignore-vuln GHSA-xxxx-yyyy-zzzz'
+```
+Document the suppression reason in your caller workflow as a comment.
+
+---
+
+### ❌ `pip-audit` reports vulnerabilities in dev/test dependencies
+
+The `install-command` installs optional extras that pull in vulnerable packages not present in production.
+→ Use a minimal install command that reflects the production dependency set:
+```yaml
+install-command: 'pip install -e "."'   # base deps only, no extras
+```
+
+---
+
+### ❌ Coverage summary step is skipped or shows "coverage.json not found"
+
+The `test-command` ran but `pytest-cov` was not loaded, so `coverage.json` was never written.
+→ Ensure `test-command` does not override the `--cov` flags. The workflow appends them automatically — do not include `--no-cov` in your command.
+→ Check that `coverage-source` matches a real path in the project. An incorrect path causes `pytest-cov` to produce an empty report.
+
+---
+
+### ❌ Coverage threshold check fails unexpectedly
+
+`coverage-threshold` is set but the actual coverage is slightly below the value due to rounding.
+→ `coverage.json` stores `percent_covered_display` as a rounded integer. If actual coverage is `79.6%` and threshold is `80`, the check fails. Lower the threshold by 1 or fix the missing coverage.
 
 ---
 

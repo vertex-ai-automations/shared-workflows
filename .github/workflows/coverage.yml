@@ -1,0 +1,159 @@
+# ==============================================================================
+# 📊 Reusable Workflow: Test coverage report
+# ==============================================================================
+# USAGE — call this from your project repo:
+#
+#   jobs:
+#     coverage:
+#       uses: vertex-ai-automations/shared-workflows/.github/workflows/coverage.yml@main
+#       with:
+#         install-command: 'pip install -e ".[test]"'
+#         coverage-source: 'src/'
+#
+# COVERAGE THRESHOLD:
+#   Fail the job when total coverage drops below a minimum:
+#     coverage-threshold: 80
+#
+# NOTES:
+#   - Runs on ubuntu-latest only — coverage does not need cross-platform runs
+#   - pytest-cov is installed automatically; it does not need to be in your extras
+#   - Results are posted to the GitHub Actions job summary (no third-party service)
+#   - coverage.json is written to the working directory and consumed by the
+#     summary and threshold steps; it is not uploaded as an artifact
+# ==============================================================================
+
+name: 📊 Coverage
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version for the runner"
+        type: string
+        default: "3.11"
+      install-command:
+        description: "Command to install the package and test dependencies"
+        type: string
+        default: 'pip install -e ".[test]"'
+      test-command:
+        description: "Base pytest command — --cov flags are appended automatically"
+        type: string
+        default: "pytest"
+      coverage-source:
+        description: "Path to measure coverage for (e.g. 'src/' or 'src/mypackage')"
+        type: string
+        default: "src/"
+      coverage-threshold:
+        description: "Minimum total coverage %. Job fails if below this. Set 0 to disable."
+        type: number
+        default: 0
+      working-directory:
+        description: "Working directory (monorepo support)"
+        type: string
+        default: "."
+
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: "Python version"
+        type: string
+        default: "3.11"
+      coverage-source:
+        description: "Path to measure coverage for"
+        type: string
+        default: "src/"
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: 📊 Coverage
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+
+    steps:
+      - name: 🔄 Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for setuptools_scm during install
+
+      - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.11' }}
+          cache: 'pip'
+          cache-dependency-path: |
+            **/pyproject.toml
+            **/requirements*.txt
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          ${{ inputs.install-command || 'pip install -e ".[test]"' }}
+          pip install pytest-cov
+
+      - name: 🧪 Run tests with coverage
+        run: >-
+          ${{ inputs.test-command || 'pytest' }}
+          --cov=${{ inputs.coverage-source || 'src/' }}
+          --cov-report=term-missing
+          --cov-report=json:coverage.json
+
+      - name: 📊 Post coverage summary
+        if: always()
+        run: |
+          python - <<'EOF'
+          import json, os, pathlib, sys
+
+          cov_file = pathlib.Path("coverage.json")
+          if not cov_file.exists():
+              print("coverage.json not found — skipping summary")
+              sys.exit(0)
+
+          data = json.loads(cov_file.read_text())
+          totals = data["totals"]
+          total_pct = totals["percent_covered_display"]
+
+          lines = [
+              "## 📊 Coverage Report",
+              "",
+              f"**Total: {total_pct}%** &nbsp;|&nbsp; "
+              f"Statements: {totals['num_statements']} &nbsp;|&nbsp; "
+              f"Missing: {totals['missing_lines']}",
+              "",
+              "| File | Stmts | Missing | Cover |",
+              "|------|------:|--------:|------:|",
+          ]
+          for filename, stats in sorted(data["files"].items()):
+              s = stats["summary"]
+              lines.append(
+                  f"| `{filename}` | {s['num_statements']} | {s['missing_lines']} | {s['percent_covered_display']}% |"
+              )
+
+          summary = "\n".join(lines)
+          print(summary)
+
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a") as f:
+                  f.write(summary + "\n")
+          EOF
+
+      - name: ✅ Enforce coverage threshold
+        if: ${{ inputs.coverage-threshold > 0 }}
+        run: |
+          python - <<'EOF'
+          import json, sys, pathlib
+
+          threshold = ${{ inputs.coverage-threshold || 0 }}
+          data = json.loads(pathlib.Path("coverage.json").read_text())
+          actual = float(data["totals"]["percent_covered_display"])
+
+          if actual < threshold:
+              print(f"❌ Coverage {actual:.1f}% is below the required {threshold}%")
+              sys.exit(1)
+          print(f"✅ Coverage {actual:.1f}% meets the required {threshold}%")
+          EOF
