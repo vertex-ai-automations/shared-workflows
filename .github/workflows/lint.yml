@@ -1,0 +1,85 @@
+# ==============================================================================
+# 🔍 Reusable Workflow: Ruff lint and format check
+# ==============================================================================
+# USAGE — call this from your project repo:
+#
+#   jobs:
+#     lint:
+#       uses: vertex-ai-automations/shared-workflows/.github/workflows/lint.yml@main
+#       with:
+#         lint-args: 'src/ tests/'
+#
+# NOTES:
+#   - Runs ruff check (lint violations) then ruff format --check (formatting)
+#   - Both checks run in the same job so all failures are visible together
+#   - Pin ruff-version for reproducible CI (e.g. ruff-version: '0.4.4')
+#     or omit to always use the latest release
+# ==============================================================================
+
+name: 🔍 Lint (Ruff)
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version for the runner"
+        type: string
+        default: "3.11"
+      ruff-version:
+        description: "Ruff version to install (e.g. '0.4.4'). Omit for latest."
+        type: string
+        default: ""
+      lint-args:
+        description: "Paths or flags passed to both ruff check and ruff format (e.g. 'src/ tests/')"
+        type: string
+        default: "."
+      working-directory:
+        description: "Working directory (monorepo support)"
+        type: string
+        default: "."
+
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: "Python version"
+        type: string
+        default: "3.11"
+      lint-args:
+        description: "Paths to lint"
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: 🔍 Ruff
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+
+    steps:
+      - name: 🔄 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.11' }}
+
+      - name: 📦 Install ruff
+        run: |
+          pip install --upgrade pip
+          if [ -n "${{ inputs.ruff-version }}" ]; then
+            pip install "ruff==${{ inputs.ruff-version }}"
+          else
+            pip install ruff
+          fi
+
+      - name: 🔍 ruff check
+        run: ruff check ${{ inputs.lint-args || '.' }}
+
+      - name: 🎨 ruff format --check
+        run: ruff format --check ${{ inputs.lint-args || '.' }}

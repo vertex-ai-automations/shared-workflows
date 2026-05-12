@@ -18,13 +18,16 @@ All workflow files live in `.github/workflows/`. Each is a `workflow_call` reusa
 uses: vertex-ai-automations/shared-workflows/.github/workflows/<file>.yml@<ref>
 ```
 
-**Three workflows:**
+**Six workflows:**
 
 | File | Purpose |
 |---|---|
 | `python-publish.yml` | Multi-job pipeline: validate tag → test → build → publish to TestPyPI and/or PyPI |
 | `publish-mkdocs.yml` | Build MkDocs site → deploy to GitHub Pages |
 | `publish-zensical.yml` | Build Zensical site (MkDocs-based, Python 3.10+) → deploy to GitHub Pages |
+| `test.yml` | Cross-platform, multi-Python test matrix; `os-matrix` and `python-versions` are JSON-string inputs |
+| `lint.yml` | Ruff lint (`ruff check`) + format check (`ruff format --check`) |
+| `typecheck.yml` | Static type checking; defaults to `mypy src/`, accepts any checker via `typecheck-command` |
 
 ## Key Design Invariants
 

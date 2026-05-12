@@ -1,0 +1,115 @@
+# ==============================================================================
+# 🧪 Reusable Workflow: Cross-platform, multi-Python test matrix
+# ==============================================================================
+# USAGE — call this from your project repo:
+#
+#   jobs:
+#     test:
+#       uses: vertex-ai-automations/shared-workflows/.github/workflows/test.yml@main
+#       with:
+#         python-versions: '["3.9", "3.10", "3.11", "3.12"]'
+#         os-matrix: '["ubuntu-latest", "macos-latest", "windows-latest"]'
+#         install-command: 'pip install -e ".[tui,fastapi]" && pip install -r tests/requirements.txt'
+#         test-command: 'pytest tests/ -v --tb=short'
+#
+# NOTES:
+#   - python-versions and os-matrix are JSON arrays serialised as strings
+#     (GitHub Actions does not support native array inputs)
+#   - fetch-depth: 0 is set so setuptools_scm can derive the version during install
+#   - shell: bash is set on cross-platform steps so install-command syntax is
+#     consistent across ubuntu, macos, and windows runners
+#   - pip caching uses setup-python's built-in cache — handles Windows paths correctly
+# ==============================================================================
+
+name: 🧪 Test Matrix
+
+on:
+  workflow_call:
+    inputs:
+      python-versions:
+        description: "JSON array of Python versions to test (e.g. '[\"3.11\",\"3.12\"]')"
+        type: string
+        default: '["3.9", "3.10", "3.11", "3.12"]'
+      os-matrix:
+        description: "JSON array of runner OS labels (e.g. '[\"ubuntu-latest\"]')"
+        type: string
+        default: '["ubuntu-latest", "macos-latest", "windows-latest"]'
+      install-command:
+        description: "Command to install the package and test dependencies"
+        type: string
+        default: 'pip install -e ".[test]"'
+      test-command:
+        description: "Command to run the test suite"
+        type: string
+        default: 'pytest'
+      fail-fast:
+        description: "Cancel remaining matrix jobs when one fails"
+        type: boolean
+        default: false
+      working-directory:
+        description: "Working directory (monorepo support)"
+        type: string
+        default: '.'
+
+  workflow_dispatch:
+    inputs:
+      python-versions:
+        description: "JSON array of Python versions"
+        type: string
+        default: '["3.11"]'
+      os-matrix:
+        description: "JSON array of OS labels"
+        type: string
+        default: '["ubuntu-latest"]'
+      install-command:
+        description: "Install command"
+        type: string
+        default: 'pip install -e ".[test]"'
+      test-command:
+        description: "Test command"
+        type: string
+        default: 'pytest'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 🧪 py${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Inputs are strings internally — compare both bool and string representations
+      fail-fast: ${{ inputs.fail-fast == true || inputs.fail-fast == 'true' }}
+      matrix:
+        # || fallback handles workflow_dispatch where workflow_call defaults don't apply
+        os: ${{ fromJson(inputs.os-matrix || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
+        python-version: ${{ fromJson(inputs.python-versions || '["3.9", "3.10", "3.11", "3.12"]') }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+
+    steps:
+      - name: 🔄 Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for setuptools_scm
+
+      - name: 🐍 Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+          # cache-dependency-path is relative to checkout root, not working-directory
+          cache-dependency-path: |
+            **/pyproject.toml
+            **/requirements*.txt
+
+      - name: 📦 Install dependencies
+        shell: bash
+        run: |
+          pip install --upgrade pip
+          ${{ inputs.install-command || 'pip install -e ".[test]"' }}
+
+      - name: 🧪 Run tests
+        shell: bash
+        run: ${{ inputs.test-command || 'pytest' }}
