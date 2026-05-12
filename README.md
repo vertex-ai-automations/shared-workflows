@@ -2,7 +2,7 @@
 
 > Centralized, reusable CI/CD workflow templates for all projects in the **vertex-ai-automations** GitHub Organization.
 
-[![Workflows](https://img.shields.io/badge/workflows-2-blue?logo=github-actions)](/.github/workflows)
+[![Workflows](https://img.shields.io/badge/workflows-6-blue?logo=github-actions)](/.github/workflows)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-reusable-orange?logo=github)](https://docs.github.com/en/actions/using-workflows/reusing-workflows)
 
@@ -14,8 +14,13 @@
 - [Repository Structure](#-repository-structure)
 - [Available Workflows](#-available-workflows)
   - [Deploy MkDocs to GitHub Pages](#-deploy-mkdocs-to-github-pages)
+  - [Deploy Zensical Docs to GitHub Pages](#-deploy-zensical-docs-to-github-pages)
   - [Build and Publish Python Package to PyPI](#-build-and-publish-python-package-to-pypi)
-- [Quick Start](#-quick-start)
+  - [Cross-platform Test Matrix](#-cross-platform-test-matrix)
+  - [Lint with Ruff](#-lint-with-ruff)
+  - [Static Type Check](#-static-type-check)
+- [Release Quick Start](#-release-quick-start)
+- [CI Quick Start](#-ci-quick-start)
 - [Publish Target Flag](#-publish-target-flag)
 - [setuptools_scm Versioning](#-setuptools_scm-versioning)
 - [Setup Guide](#-setup-guide)
@@ -56,7 +61,10 @@ vertex-ai-automations/shared-workflows/     ← This repo
 │   └── workflows/                          ← All reusable workflow templates live here
 │       ├── publish-mkdocs.yml              ← MkDocs → GitHub Pages deployment
 │       ├── publish-zensical.yml            ← Zensical → GitHub Pages deployment
-│       └── python-publish.yml             ← Python package → PyPI/TestPyPI publishing
+│       ├── python-publish.yml              ← Python package → PyPI/TestPyPI publishing
+│       ├── test.yml                        ← Cross-platform, multi-Python test matrix
+│       ├── lint.yml                        ← Ruff lint + format check
+│       └── typecheck.yml                   ← Static type checking (mypy / pyright)
 │
 ├── docs/
 │   └── adr/                                ← Architecture Decision Records
@@ -166,7 +174,80 @@ test ──────────────┘               (if target incl
 
 ---
 
-## 🚀 Quick Start
+### 🧪 Cross-platform Test Matrix
+
+**File:** `.github/workflows/test.yml`
+
+Runs your test suite across a configurable matrix of OS and Python version combinations.
+
+**What it does:**
+
+1. Spins up a matrix of runners from `os-matrix` × `python-versions`
+2. Checks out the repo with full git history (needed for `setuptools_scm` during install)
+3. Sets up Python with built-in pip caching (cross-platform safe)
+4. Upgrades pip and runs `install-command`
+5. Runs `test-command`
+
+**Key design decisions:**
+
+| Decision | Reason |
+|---|---|
+| `os-matrix` and `python-versions` are JSON-string inputs | GitHub Actions has no native array input type — `fromJson()` unpacks them into the matrix |
+| `\|\|` fallback on every `fromJson()` call | `workflow_call` and `workflow_dispatch` have separate defaults; without the fallback, manual dispatch with an empty field causes a parse error |
+| `shell: bash` on install and test steps | Windows runners default to PowerShell — `shell: bash` (Git Bash) ensures `install-command` syntax is consistent across all three OS runners |
+| `setup-python cache: 'pip'` instead of `actions/cache` | The built-in cache resolves the correct pip cache path per OS — `~/.cache/pip` doesn't exist on Windows |
+| `fetch-depth: 0` | `setuptools_scm` requires full git history to derive the package version during `pip install` |
+| `fail-fast` compares both `true` and `'true'` | GitHub Actions passes boolean inputs as strings internally — comparing both forms prevents `false` from being interpreted as truthy |
+
+---
+
+### 🔍 Lint with Ruff
+
+**File:** `.github/workflows/lint.yml`
+
+Runs [Ruff](https://docs.astral.sh/ruff/) to enforce both lint rules and code formatting in a single job.
+
+**What it does:**
+
+1. Checks out the repository
+2. Installs Python and Ruff (optionally pinned to a specific version)
+3. Runs `ruff check` — enforces lint rules from your `pyproject.toml` or `ruff.toml`
+4. Runs `ruff format --check` — verifies formatting without modifying files
+
+**Key design decisions:**
+
+| Decision | Reason |
+|---|---|
+| `ruff check` and `ruff format --check` in one job | Both run in seconds — combining them means all failures are visible together rather than split across two jobs |
+| `ruff-version` input | Pins Ruff to a known version for reproducible CI; omit to always use the latest release |
+| `lint-args` passed to both steps | A single input controls the paths checked by both the linter and the formatter — no duplication needed in the caller |
+
+---
+
+### 🔎 Static Type Check
+
+**File:** `.github/workflows/typecheck.yml`
+
+Runs a static type checker against your codebase. Defaults to [mypy](https://mypy-lang.org/) but accepts any checker via `typecheck-command`.
+
+**What it does:**
+
+1. Checks out the repo with full git history
+2. Sets up Python with pip caching
+3. Upgrades pip and runs `install-command` to install the package and its type stubs
+4. Runs `typecheck-command`
+
+**Key design decisions:**
+
+| Decision | Reason |
+|---|---|
+| `typecheck-command` instead of a `tool` enum | Projects using pyright or basedpyright don't need a different workflow — one input covers all checkers |
+| `install-command` defaults to `.[dev]` (not `.[test]`) | Type stubs and mypy are typically declared in the `dev` extras group, separate from the test runner |
+| `fetch-depth: 0` | Same reason as `test.yml` — `setuptools_scm` needs full history during `pip install` |
+
+---
+
+## 🚀 Release Quick Start
 
 Create `.github/workflows/release.yml` in your project repo:
 
@@ -229,6 +310,92 @@ git push origin 1.2.1
 
 > **Note:** `permissions:` is only required on the `docs` job (MkDocs needs `pages: write`).
 > The `publish` job has no `permissions:` block — they are declared inside `python-publish.yml`.
+
+---
+
+## 🔁 CI Quick Start
+
+Create `.github/workflows/ci.yml` in your project repo to run tests, linting, and type checking on every push and pull request:
+
+```yaml
+name: 🔬 CI
+
+on:
+  push:
+    branches: [main]
+    tags-ignore: ["*.*.*"]   # tag pushes are handled by release.yml
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  # 🧪 Cross-platform test matrix — override os-matrix/python-versions per project
+  test:
+    name: 🧪 Test
+    uses: vertex-ai-automations/shared-workflows/.github/workflows/test.yml@main
+    with:
+      python-versions: '["3.9", "3.10", "3.11", "3.12"]'
+      os-matrix: '["ubuntu-latest", "macos-latest", "windows-latest"]'
+      install-command: 'pip install -e ".[test]"'
+      test-command: 'pytest tests/ -v --tb=short'
+
+  # 🔍 Ruff lint + format check
+  lint:
+    name: 🔍 Lint
+    uses: vertex-ai-automations/shared-workflows/.github/workflows/lint.yml@main
+    with:
+      lint-args: 'src/ tests/'
+
+  # 🔎 Static type checking
+  typecheck:
+    name: 🔎 Type Check
+    uses: vertex-ai-automations/shared-workflows/.github/workflows/typecheck.yml@main
+    with:
+      install-command: 'pip install -e ".[dev]"'
+      typecheck-command: 'mypy src/ --strict'
+```
+
+**Narrowing the matrix per project:**
+
+```yaml
+# Linux-only project — 4 jobs instead of 12
+test:
+  uses: vertex-ai-automations/shared-workflows/.github/workflows/test.yml@main
+  with:
+    os-matrix: '["ubuntu-latest"]'
+    python-versions: '["3.11", "3.12"]'
+    install-command: 'pip install -e ".[test]"'
+```
+
+**Multi-step install (extras + requirements file):**
+
+```yaml
+test:
+  uses: vertex-ai-automations/shared-workflows/.github/workflows/test.yml@main
+  with:
+    install-command: 'pip install -e ".[tui,fastapi]" && pip install -r tests/requirements.txt'
+    test-command: 'pytest tests/ -v --tb=short'
+```
+
+**Pinning Ruff to a specific version:**
+
+```yaml
+lint:
+  uses: vertex-ai-automations/shared-workflows/.github/workflows/lint.yml@main
+  with:
+    ruff-version: '0.4.4'
+    lint-args: 'src/'
+```
+
+**Using pyright instead of mypy:**
+
+```yaml
+typecheck:
+  uses: vertex-ai-automations/shared-workflows/.github/workflows/typecheck.yml@main
+  with:
+    install-command: 'pip install -e ".[dev]"'   # must include pyright
+    typecheck-command: 'pyright src/'
+```
 
 ---
 
@@ -488,6 +655,47 @@ Pass both via `secrets: inherit` — the workflow reads them by name.
 
 ---
 
+### `test.yml`
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `python-versions` | `string` (JSON array) | `'["3.9","3.10","3.11","3.12"]'` | Python versions to test. Pass as a JSON array string. |
+| `os-matrix` | `string` (JSON array) | `'["ubuntu-latest","macos-latest","windows-latest"]'` | Runner OS labels. Pass as a JSON array string. |
+| `install-command` | `string` | `'pip install -e ".[test]"'` | Full install command. Chain steps with `&&` (bash syntax). |
+| `test-command` | `string` | `'pytest'` | Command to run the test suite. |
+| `fail-fast` | `boolean` | `false` | Cancel remaining matrix jobs when one fails. |
+| `working-directory` | `string` | `"."` | Root directory (for monorepos). |
+
+> **No `permissions:` block needed on the caller job** — `contents: read` is declared inside `test.yml`.
+
+---
+
+### `lint.yml`
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `python-version` | `string` | `"3.11"` | Python version for the runner. |
+| `ruff-version` | `string` | `""` | Pin Ruff to a specific version (e.g. `"0.4.4"`). Omit for latest. |
+| `lint-args` | `string` | `"."` | Paths or flags passed to both `ruff check` and `ruff format --check`. |
+| `working-directory` | `string` | `"."` | Root directory (for monorepos). |
+
+> **No `permissions:` block needed on the caller job** — `contents: read` is declared inside `lint.yml`.
+
+---
+
+### `typecheck.yml`
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `python-version` | `string` | `"3.11"` | Python version for the runner. |
+| `typecheck-command` | `string` | `"mypy src/"` | Type checker command. Accepts any checker: `pyright`, `basedpyright src/`, etc. |
+| `install-command` | `string` | `'pip install -e ".[dev]"'` | Install command. Must install the type checker and any required stubs. |
+| `working-directory` | `string` | `"."` | Root directory (for monorepos). |
+
+> **No `permissions:` block needed on the caller job** — `contents: read` is declared inside `typecheck.yml`.
+
+---
+
 ## 🔁 Migration Guide
 
 If your project has existing inline workflow files, follow these steps.
@@ -501,7 +709,7 @@ git rm .github/workflows/publish-mkdocs.yml
 git rm .github/workflows/python-publish.yml
 ```
 
-**Step 3:** Create `.github/workflows/release.yml` from the [Quick Start](#-quick-start) example above.
+**Step 3:** Create `.github/workflows/release.yml` from the [Release Quick Start](#-release-quick-start) example above.
 
 **Step 4:** Remove any `artifact-name`, `repository-url`, or `use-trusted-publishing` inputs from old callers — these have been replaced by `publish-target`.
 
@@ -623,6 +831,41 @@ Common causes:
 ### ❌ `publish-testpypi` is skipped unexpectedly
 
 This job is skipped when `run-tests: false` OR when `publish-target: pypi`. Check both inputs in your caller workflow.
+
+---
+
+### ❌ Test matrix fails with `fromJson: invalid JSON`
+
+This happens when triggering `test.yml` via `workflow_dispatch` with an empty `os-matrix` or `python-versions` field. The `workflow_dispatch` input defaults are independent from `workflow_call` defaults.
+→ Always provide a valid JSON array when triggering manually, e.g. `["ubuntu-latest"]` or `["3.11"]`.
+
+---
+
+### ❌ Tests pass on Ubuntu but fail on Windows with install errors
+
+The `install-command` uses bash syntax (e.g. `&&`, single quotes). Windows runners use PowerShell by default.
+→ `test.yml` sets `shell: bash` on the install and test steps — this uses Git Bash on Windows. Ensure your install command uses bash syntax, not PowerShell syntax.
+
+---
+
+### ❌ `ruff: command not found`
+
+The `lint.yml` workflow installs Ruff before running — this error should not occur unless the install step failed.
+→ Check the **📦 Install ruff** step in the job logs for the root cause (network error, invalid `ruff-version`, etc.).
+
+---
+
+### ❌ `mypy: command not found` (or `pyright: command not found`)
+
+The type checker is not included in the extras installed by `install-command`.
+→ Ensure the type checker is declared as a dependency in the extras group you're installing. For example, add `mypy` to `[project.optional-dependencies] dev` in `pyproject.toml`.
+
+---
+
+### ❌ mypy reports `Cannot find implementation or library stub for module`
+
+Type stubs for a dependency are missing.
+→ Install the relevant stub package (e.g. `types-requests`, `pandas-stubs`) in your `dev` extras, then pass `install-command: 'pip install -e ".[dev]"'` to `typecheck.yml`.
 
 ---
 
