@@ -42,6 +42,10 @@ test ──────────────┘
 
 - Docs deployment is triggered via `workflow_run: workflows: ["CI"]` so it only fires after CI passes on `main`. The docs job carries an `if: conclusion == 'success'` condition. Tag-triggered publish is unaffected.
 - All publish jobs are **tag-gated** internally — callers never need `if: startsWith(github.ref, 'refs/tags/')`.
+- All boolean inputs check both the boolean form **and** the string form (e.g. `!= false && != 'false'`) — `workflow_dispatch` coerces booleans to strings, which breaks strict boolean comparisons.
+- User-controlled string inputs that are passed to shell `run:` steps (`pip-audit-args`, `lint-args`, `ruff-version`) are routed via environment variables, never interpolated inline, to prevent shell injection.
+- `fetch-tags: true` is set alongside `fetch-depth: 0` on every checkout that mentions setuptools_scm — history alone does not guarantee tag reachability on all runner configurations.
+- `concurrency: group` in docs workflows includes `${{ github.ref }}` to prevent cross-branch deployment queueing.
 - Tags must be **bare SemVer** (`X.Y.Z`) — no `v` prefix, no pre-release suffixes. A `reject-v-prefix-tag` job surfaces a helpful error for `v`-prefixed tags; other non-matching tags skip silently.
 - **`setuptools_scm`** derives version from the git tag at build time. All checkout steps use `fetch-depth: 0` + `fetch-tags: true` — a shallow clone always produces `0.1.dev0`.
 - `publish-testpypi` is skipped when `run-tests: false` (TestPyPI is the pre-release gate; bypassing tests bypasses TestPyPI).

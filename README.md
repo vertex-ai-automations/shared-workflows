@@ -107,7 +107,10 @@ Builds a [MkDocs](https://www.mkdocs.org/) documentation site and deploys it to 
 |---|---|
 | Uses `actions/deploy-pages` instead of `peaceiris/actions-gh-pages` | Official GitHub action — no third-party dependency for a critical deployment step |
 | `permissions: pages: write` (not `contents: write`) | Least-privilege — the workflow token cannot push commits or modify branches |
+| `concurrency: group` scoped to `${{ github.ref }}` | A static group name would queue deployments across branches; including the ref keeps per-branch queues independent |
 | `concurrency: cancel-in-progress: false` | Prevents a fast push from cancelling an in-flight deploy; queues instead |
+| `src-layout` checks both `== true` and `== 'true'` | `workflow_call` passes a boolean; `workflow_dispatch` coerces it to the string `'true'` — strict equality `== true` alone silently skips PYTHONPATH on manual runs |
+| `mkdocs-strict` uses step `if:` conditions (not shell comparison) | In-shell `[ "$VAR" = "true" ]` is fragile with boolean inputs; step-level `if:` uses the expression engine which handles both boolean and string forms correctly |
 | Falls back gracefully if no requirements file found | Won't hard-fail new projects that haven't set up `docs/requirements.txt` yet |
 
 ---
@@ -134,6 +137,9 @@ Builds a [Zensical](https://zensical.dev/) documentation site and deploys it to 
 |---|---|
 | Uses `docs-requirements` input | Lets callers pin exact versions for reproducible builds |
 | `id-token: write` scoped to `deploy-docs` job only | Least-privilege — the build job installs third-party packages and should not have OIDC token minting capability |
+| `concurrency: group` scoped to `${{ github.ref }}` | Same reason as `publish-mkdocs.yml` — prevents cross-branch deployment queueing |
+| `src-layout` checks both `== true` and `== 'true'` | Same coercion issue as `publish-mkdocs.yml` — `workflow_dispatch` passes booleans as strings |
+| `docs-requirements` path is quoted in shell | A path containing spaces would otherwise split into multiple arguments; quoting is defensive |
 | Requires Python 3.10+ | Zensical framework constraint |
 
 ---
@@ -170,11 +176,14 @@ test ──────────────┘               (if target incl
 | All jobs tag-gated internally | Callers never need `if: startsWith(github.ref, 'refs/tags/')` — non-tag pushes skip all jobs cleanly |
 | `permissions` declared inside the workflow | Callers do not need `permissions:` blocks on the publish job |
 | `continue-on-error: true` on `test` job | Test results are visible in the UI without blocking a release — useful when publishing hotfixes |
+| `run-tests` checks both `!= false` and `!= 'false'` | `workflow_dispatch` coerces boolean inputs to strings — checking only `!= false` would allow the `workflow_dispatch` string `'false'` to pass the gate, silently enabling tests when the caller intended to skip them |
 | `publish-testpypi` skipped when `run-tests: false` | TestPyPI is the pre-release validation gate — bypassing tests bypasses the sandbox too |
 | `publish-testpypi` runs before `publish-pypi` when target is `both` | TestPyPI confirms the upload works cleanly before the immutable real release |
+| `build` job `if:` enumerates `success \| failure \| skipped \| cancelled` | `always()` alone does not block on upstream cancellation — explicit enumeration ensures the build is skipped when a workflow cancel races with the test job |
 | Trusted Publishing as default for PyPI | More secure than long-lived API tokens — no secrets to rotate or leak |
 | Artifact name auto-derived from repo name | Eliminates per-project configuration — repo `custom-logger` → artifact `custom-logger-dist` |
-| `fetch-depth: 0` + `fetch-tags: true` on all checkout steps | `setuptools_scm` requires full git history to resolve the version — shallow clones produce `0.1.dev0` |
+| `fetch-depth: 0` + `fetch-tags: true` on all checkout steps | `setuptools_scm` requires full git history **and** reachable tags — `fetch-depth: 0` fetches history but does not guarantee tags on all runner configurations |
+| `grep -Eq` (POSIX) instead of `grep -Pq` (GNU) in SemVer validation | GNU-only `-P` flag fails on macOS BSD grep — `-E` with character classes is POSIX-portable |
 
 ---
 
@@ -200,7 +209,7 @@ Runs your test suite across a configurable matrix of OS and Python version combi
 | `\|\|` fallback on every `fromJson()` call | `workflow_call` and `workflow_dispatch` have separate defaults; without the fallback, manual dispatch with an empty field causes a parse error |
 | `shell: bash` on install and test steps | Windows runners default to PowerShell — `shell: bash` (Git Bash) ensures `install-command` syntax is consistent across all three OS runners |
 | `setup-python cache: 'pip'` instead of `actions/cache` | The built-in cache resolves the correct pip cache path per OS — `~/.cache/pip` doesn't exist on Windows |
-| `fetch-depth: 0` | `setuptools_scm` requires full git history to derive the package version during `pip install` |
+| `fetch-depth: 0` + `fetch-tags: true` | `setuptools_scm` requires full git history **and** reachable tags to derive the version during `pip install` — history alone is not sufficient |
 | `fail-fast` compares both `true` and `'true'` | GitHub Actions passes boolean inputs as strings internally — comparing both forms prevents `false` from being interpreted as truthy |
 
 ---
@@ -225,6 +234,7 @@ Runs [Ruff](https://docs.astral.sh/ruff/) to enforce both lint rules and code fo
 | `ruff check` and `ruff format --check` in one job | Both run in seconds — combining them means all failures are visible together rather than split across two jobs |
 | `ruff-version` input | Pins Ruff to a known version for reproducible CI; omit to always use the latest release |
 | `lint-args` passed to both steps | A single input controls the paths checked by both the linter and the formatter — no duplication needed in the caller |
+| `lint-args` and `ruff-version` passed via env vars (not inline `${{ }}`) | Injecting user-controlled inputs directly into a shell `run:` line creates a shell injection surface — env vars are interpolated by the shell safely without word splitting or metacharacter expansion |
 
 ---
 
@@ -247,7 +257,7 @@ Runs a static type checker against your codebase. Defaults to [mypy](https://myp
 |---|---|
 | `typecheck-command` instead of a `tool` enum | Projects using pyright or basedpyright don't need a different workflow — one input covers all checkers |
 | `install-command` defaults to `.[dev]` (not `.[test]`) | Type stubs and mypy are typically declared in the `dev` extras group, separate from the test runner |
-| `fetch-depth: 0` | Same reason as `test.yml` — `setuptools_scm` needs full history during `pip install` |
+| `fetch-depth: 0` + `fetch-tags: true` | Same reason as `test.yml` — `setuptools_scm` needs full history **and** reachable tags during `pip install` |
 
 ---
 
@@ -272,7 +282,9 @@ Scans all installed packages (including transitive dependencies) for known vulne
 |---|---|
 | Installs the project before auditing | Scanning the full installed environment catches transitive dep vulnerabilities — auditing a `requirements.txt` alone can miss them |
 | `pip-audit` installed separately (not part of `install-command`) | Keeps the audit tool out of the project's own dependency tree |
+| `pip-audit-args` passed via env var (not inline `${{ }}`) | Same shell injection reason as `lint.yml` — user-controlled strings must not be interpolated directly into the `run:` command line |
 | `pip-audit-args` input | Provides an escape hatch for suppressing accepted advisories (`--ignore-vuln GHSA-xxxx-yyyy-zzzz`) without modifying the workflow |
+| `fetch-depth: 0` + `fetch-tags: true` | Projects using `setuptools_scm` require reachable tags during `pip install -e .` — without them the installed version becomes a `.devN` local build |
 
 ---
 
@@ -297,6 +309,7 @@ Runs your test suite with `pytest-cov` and posts a per-file coverage table to th
 | `--cov-report=json` drives both the summary and the threshold check | A single machine-readable output feeds both steps, avoiding a second pytest run |
 | Summary step runs with `if: always()` | Coverage table is posted even when tests fail — useful for diagnosing which files lack coverage |
 | `coverage-threshold: 0` disables the gate by default | Opt-in enforcement — projects set their own bar without the workflow imposing a default |
+| `percent_covered_display` falls back to `percent_covered` | `percent_covered_display` was added in coverage.py 7.0 — the fallback prevents a `KeyError` on projects pinned to coverage.py 6.x |
 
 ---
 
