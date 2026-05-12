@@ -63,7 +63,7 @@ permissions:
 
 # Prevent concurrent deployments — queue them instead of cancelling
 concurrency:
-  group: "pages-deploy"
+  group: "pages-deploy-${{ github.ref }}"
   cancel-in-progress: false
 
 jobs:
@@ -97,11 +97,11 @@ jobs:
 
       - name: 📦 Install doc dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r ${{ inputs.docs-requirements || 'requirements-docs.txt' }}
+          python -m pip install --upgrade pip
+          pip install -r "${{ inputs.docs-requirements || 'requirements-docs.txt' }}"
 
       - name: 🔧 Configure PYTHONPATH for src layout
-        if: ${{ inputs.src-layout == true }}
+        if: ${{ inputs.src-layout == true || inputs.src-layout == 'true' }}
         run: echo "PYTHONPATH=$PYTHONPATH:$(pwd)/src" >> $GITHUB_ENV
 
       - name: 🔨 Build Zensical site

@@ -78,7 +78,8 @@ jobs:
       - name: 🔄 Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history for setuptools_scm during install
+          fetch-depth: 0   # full history for setuptools_scm during install
+          fetch-tags: true # required for setuptools_scm to resolve version from tags
 
       - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
         uses: actions/setup-python@v5
@@ -115,7 +116,8 @@ jobs:
 
           data = json.loads(cov_file.read_text())
           totals = data["totals"]
-          total_pct = totals["percent_covered_display"]
+          # percent_covered_display added in coverage.py 7.0; fall back to float field
+          total_pct = totals.get("percent_covered_display", str(round(totals["percent_covered"])))
 
           lines = [
               "## 📊 Coverage Report",
@@ -129,8 +131,9 @@ jobs:
           ]
           for filename, stats in sorted(data["files"].items()):
               s = stats["summary"]
+              pct = s.get("percent_covered_display", str(round(s["percent_covered"])))
               lines.append(
-                  f"| `{filename}` | {s['num_statements']} | {s['missing_lines']} | {s['percent_covered_display']}% |"
+                  f"| `{filename}` | {s['num_statements']} | {s['missing_lines']} | {pct}% |"
               )
 
           summary = "\n".join(lines)
@@ -150,7 +153,8 @@ jobs:
 
           threshold = ${{ inputs.coverage-threshold || 0 }}
           data = json.loads(pathlib.Path("coverage.json").read_text())
-          actual = float(data["totals"]["percent_covered_display"])
+          totals = data["totals"]
+          actual = float(totals.get("percent_covered_display", totals["percent_covered"]))
 
           if actual < threshold:
               print(f"❌ Coverage {actual:.1f}% is below the required {threshold}%")

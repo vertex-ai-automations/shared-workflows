@@ -69,7 +69,8 @@ jobs:
       - name: 🔄 Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history for setuptools_scm during install
+          fetch-depth: 0   # full history for setuptools_scm during install
+          fetch-tags: true # required for setuptools_scm to resolve version from tags
 
       - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
         uses: actions/setup-python@v5

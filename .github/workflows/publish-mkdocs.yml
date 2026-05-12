@@ -63,7 +63,7 @@ permissions:
 
 # Prevent concurrent deployments — queue them instead of cancelling
 concurrency:
-  group: "pages-deploy"
+  group: "pages-deploy-${{ github.ref }}"
   cancel-in-progress: false
 
 jobs:
@@ -97,7 +97,7 @@ jobs:
 
       - name: 📦 Install doc dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           REQ_FILE="${{ inputs.docs-requirements || 'docs/requirements.txt' }}"
           if [ -f "$REQ_FILE" ]; then
             echo "Installing from $REQ_FILE"
@@ -108,17 +108,16 @@ jobs:
           fi
 
       - name: 🔧 Configure PYTHONPATH for src layout
-        if: ${{ inputs.src-layout == true }}
+        if: ${{ inputs.src-layout == true || inputs.src-layout == 'true' }}
         run: echo "PYTHONPATH=$PYTHONPATH:$(pwd)/src" >> $GITHUB_ENV
 
+      - name: 🔨 Build MkDocs site (strict)
+        if: ${{ inputs.mkdocs-strict != false && inputs.mkdocs-strict != 'false' }}
+        run: mkdocs build --strict
+
       - name: 🔨 Build MkDocs site
-        run: |
-          if [ "${{ inputs.mkdocs-strict || 'true' }}" = "true" ]; then
-            mkdocs build --strict
-            ls -la
-          else
-            mkdocs build
-          fi
+        if: ${{ inputs.mkdocs-strict == false || inputs.mkdocs-strict == 'false' }}
+        run: mkdocs build
 
       # Upload using the official GitHub Pages artifact action
       - name: 📤 Upload Pages artifact

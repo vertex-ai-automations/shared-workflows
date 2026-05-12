@@ -70,6 +70,9 @@ jobs:
     steps:
       - name: 🔄 Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for setuptools_scm during install
+          fetch-tags: true # required for setuptools_scm to resolve version from tags
 
       - name: 🐍 Set up Python ${{ inputs.python-version || '3.11' }}
         uses: actions/setup-python@v5
@@ -86,7 +89,9 @@ jobs:
           ${{ inputs.install-command || 'pip install -e "."' }}
 
       - name: 🔒 Install pip-audit
-        run: pip install pip-audit
+        run: python -m pip install pip-audit
 
       - name: 🔍 Run security audit
-        run: pip-audit ${{ inputs.pip-audit-args }}
+        env:
+          PIP_AUDIT_ARGS: ${{ inputs.pip-audit-args }}
+        run: pip-audit $PIP_AUDIT_ARGS

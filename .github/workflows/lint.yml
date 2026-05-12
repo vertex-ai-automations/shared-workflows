@@ -70,16 +70,22 @@ jobs:
           python-version: ${{ inputs.python-version || '3.11' }}
 
       - name: 📦 Install ruff
+        env:
+          RUFF_VERSION: ${{ inputs.ruff-version }}
         run: |
           python -m pip install --upgrade pip
-          if [ -n "${{ inputs.ruff-version }}" ]; then
-            pip install "ruff==${{ inputs.ruff-version }}"
+          if [ -n "$RUFF_VERSION" ]; then
+            pip install "ruff==$RUFF_VERSION"
           else
             pip install ruff
           fi
 
       - name: 🔍 ruff check
-        run: ruff check ${{ inputs.lint-args || '.' }}
+        env:
+          LINT_ARGS: ${{ inputs.lint-args || '.' }}
+        run: ruff check $LINT_ARGS
 
       - name: 🎨 ruff format --check
-        run: ruff format --check ${{ inputs.lint-args || '.' }}
+        env:
+          LINT_ARGS: ${{ inputs.lint-args || '.' }}
+        run: ruff format --check $LINT_ARGS
